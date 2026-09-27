@@ -53,6 +53,42 @@ private:
         return hud.grab().toImage().pixelColor(hud.width() / 2, hud.height() / 2);
     }
 private slots:
+    void changingSourceCancelsThePreviousVolumeGesture() {
+        HudWindow hud(config());
+        hud.reveal();
+        hud.setVolumeAvailable(true);
+        const QPoint position = point(hud, "volume");
+        QSignalSpy changes(&hud, &HudWindow::volumeChanged);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        hud.setVolumeAvailable(false);
+        hud.setVolumeAvailable(true);
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        QCOMPARE(changes.size(), 0);
+        hud.setVolumeAvailable(false);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        hud.setVolumeAvailable(true);
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        QCOMPARE(changes.size(), 0);
+    }
+    void unavailableSourceVolumeDoesNotDispatchInput() {
+        HudWindow hud(config());
+        hud.reveal();
+        hud.setVolumeAvailable(false);
+        const QPoint position = point(hud, "volume");
+        QSignalSpy changes(&hud, &HudWindow::volumeChanged);
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        QWheelEvent unavailable(position, hud.mapToGlobal(position), {}, QPoint(0, 120),
+                                Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&hud, &unavailable);
+        QCOMPARE(changes.size(), 0);
+        hud.setVolumeAvailable(true);
+        hud.setVolume(0.4);
+        QWheelEvent available(position, hud.mapToGlobal(position), {}, QPoint(0, 120),
+                              Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(&hud, &available);
+        QCOMPARE(changes.size(), 1);
+        QVERIFY(qAbs(changes.first().first().toDouble() - 0.42) < 0.001);
+    }
     void artworkBackgroundFollowsTrackAndPreservesOpacity() {
         auto c = backgroundConfig();
         HudWindow hud(c); hud.reveal();

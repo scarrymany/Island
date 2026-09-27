@@ -241,6 +241,85 @@ void artworkConfiguration(const QString& directory)
     check(reloaded.config().value("artwork_background") == QJsonValue(true), "Lunar restores default artwork toggle");
     check(reloaded.config().value("artwork_background_strength") == QJsonValue(0.75), "Lunar restores default artwork strength");
 }
+
+void settingsAppearanceConfiguration(const QString& directory)
+{
+    const QJsonObject expected{{"settings_animations", true}, {"settings_animation_duration", 200},
+        {"settings_font_family", "Inter"}};
+    const auto defaults = ConfigStore::defaults();
+    for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
+        check(defaults.value(field.key()) == field.value(), qPrintable("settings appearance default: " + field.key()));
+    check(defaults.value("font_family").toString() == "Segoe UI", "settings font does not change the HUD default font");
+    check(ConfigStore::numericRange("settings_animation_duration") == qMakePair(80.0, 600.0), "settings animation duration control range");
+    for (int duration : {80, 600}) {
+        QJsonObject config{{"settings_animation_duration", duration}};
+        check(ConfigStore::validate(config), "settings animation duration accepts boundaries");
+        check(config.value("settings_animation_duration").toInt() == duration, "settings duration boundary retained");
+    }
+    QJsonObject longestFont{{"settings_font_family", QString(120, 'A')}};
+    check(ConfigStore::validate(longestFont), "settings font accepts maximum length");
+    const QList<QJsonObject> invalid = {
+        {{"settings_animations", 1}}, {{"settings_animations", "false"}}, {{"settings_animations", QJsonValue::Null}},
+        {{"settings_animation_duration", 79}}, {{"settings_animation_duration", 601}},
+        {{"settings_animation_duration", 80.5}}, {{"settings_animation_duration", true}},
+        {{"settings_animation_duration", "200"}}, {{"settings_animation_duration", QJsonValue::Null}},
+        {{"settings_font_family", 600}}, {{"settings_font_family", QJsonValue::Null}},
+        {{"settings_font_family", ""}}, {{"settings_font_family", "   "}},
+        {{"settings_font_family", "Manrope\nSegoe UI"}}, {{"settings_font_family", "Manrope\t"}},
+        {{"settings_font_family", QString(121, 'A')}}
+    };
+    for (auto config : invalid) {
+        QString error;
+        check(!ConfigStore::validate(config, &error), "invalid settings appearance rejected");
+        check(!error.isEmpty(), "invalid settings appearance explains failure");
+    }
+
+    const QString path = QDir(directory).filePath("legacy-settings-appearance.json");
+    const QJsonObject oldConfig{{"font_family", "Consolas"}, {"settings_font_size", 12},
+        {"artwork_background_strength", 0.5}, {"compact_width", 220}};
+    writeJson(path, {{"schema", 1}, {"config", oldConfig},
+        {"profiles", QJsonObject{{"Old profile", oldConfig}}},
+        {"themes", QJsonObject{{"Old theme", QJsonObject{{"settings_background", "#112233"}}}}}});
+    ConfigStore store(path);
+    check(store.loadError().isEmpty(), "old settings appearance config remains readable");
+    for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
+        check(store.config().value(field.key()) == field.value(), qPrintable("old config receives settings default: " + field.key()));
+    check(store.loadProfile("Old profile"), "old settings appearance profile remains readable");
+    for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
+        check(store.config().value(field.key()) == field.value(), qPrintable("old profile receives settings default: " + field.key()));
+    for (auto field = oldConfig.constBegin(); field != oldConfig.constEnd(); ++field)
+        check(store.config().value(field.key()) == field.value(), "settings appearance migration preserves existing options");
+
+    const QJsonObject custom{{"settings_animations", false}, {"settings_animation_duration", 360},
+        {"settings_font_family", "Noto Sans"}};
+    auto configured = store.config();
+    for (auto field = custom.constBegin(); field != custom.constEnd(); ++field)
+        configured.insert(field.key(), field.value());
+    check(store.update(configured), "custom settings animation and font saved");
+    check(store.applyTheme("Old theme"), "old partial settings theme remains applicable");
+    for (auto field = custom.constBegin(); field != custom.constEnd(); ++field)
+        check(store.config().value(field.key()) == field.value(), "old theme preserves settings animation and font choices");
+    configured = store.config();
+    check(store.saveProfile("Settings profile"), "settings appearance profile saved");
+    check(store.saveTheme("Settings theme"), "settings appearance theme saved");
+    const QString exported = QDir(directory).filePath("settings-appearance-export.json");
+    check(store.exportFile(exported), "settings appearance exported");
+    ConfigStore imported(QDir(directory).filePath("settings-appearance-import.json"));
+    check(imported.importFile(exported), "settings appearance imported");
+    check(imported.config() == configured, "settings appearance import roundtrip");
+    check(imported.update(defaults), "settings appearance profile restore setup");
+    check(imported.loadProfile("Settings profile"), "imported settings appearance profile loaded");
+    check(imported.config() == configured, "settings appearance profile restores all options");
+    check(imported.update(defaults), "settings appearance theme restore setup");
+    check(imported.applyTheme("Settings theme"), "imported settings appearance theme applied");
+    for (auto field = custom.constBegin(); field != custom.constEnd(); ++field)
+        check(imported.config().value(field.key()) == field.value(), qPrintable("theme restores settings appearance: " + field.key()));
+    ConfigStore reloaded(imported.path());
+    check(reloaded.config() == imported.config(), "settings appearance persists across reload");
+    check(reloaded.applyTheme("Lunar"), "Lunar theme restores settings appearance defaults");
+    for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
+        check(reloaded.config().value(field.key()) == field.value(), qPrintable("Lunar restores settings appearance: " + field.key()));
+}
 }
 
 int main(int argc, char** argv)
@@ -346,6 +425,7 @@ int main(int argc, char** argv)
     invalidValues();
     compactConfiguration(temporary.path());
     artworkConfiguration(temporary.path());
+    settingsAppearanceConfiguration(temporary.path());
     qInfo() << "Configuration checks completed. Failures:" << failures;
     return failures == 0 ? 0 : 1;
 }

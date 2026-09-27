@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "AppAssets.h"
 
 #include <QApplication>
 #include <QBuffer>
@@ -17,21 +18,7 @@
 #include <QTimer>
 
 namespace {
-QPixmap makeMark(int size) {
-    QPixmap image(size, size); image.fill(Qt::transparent);
-    QPainter p(&image); p.setRenderHint(QPainter::Antialiasing);
-    QLinearGradient gradient(0, 0, size, size);
-    gradient.setColorAt(0, QColor("#BDACFF")); gradient.setColorAt(1, QColor("#516CEE"));
-    p.setPen(Qt::NoPen); p.setBrush(gradient);
-    p.drawRoundedRect(QRectF(0, 0, size, size), size * .28, size * .28);
-    p.setPen(QPen(Qt::white, size * .055, Qt::SolidLine, Qt::RoundCap));
-    const double heights[]{.20, .38, .57, .31};
-    for (int i = 0; i < 4; ++i) {
-        const double x = size * (.28 + .15 * i), h = size * heights[i];
-        p.drawLine(QPointF(x, (size - h) / 2), QPointF(x, (size + h) / 2));
-    }
-    return image;
-}
+constexpr int VolumeRefreshIntervalMs = 750;
 QByteArray demoCover() {
     QPixmap image(400, 400); image.fill(QColor("#151726"));
     QPainter p(&image); p.setRenderHint(QPainter::Antialiasing);
@@ -51,7 +38,7 @@ QByteArray demoCover() {
 Application::Application(bool demo, bool background, QString configPath, QObject* parent)
     : QObject(parent), store_(std::move(configPath)), windows_(), media_(), updates_(),
       settings_(&store_), hud_(store_.config()), demo_(demo) {
-    const QIcon appIcon(makeMark(128));
+    const QIcon appIcon = AppAssets::icon();
     qApp->setWindowIcon(appIcon); settings_.setWindowIcon(appIcon); tray_.setIcon(appIcon);
     settings_.installEventFilter(this);
     setupTray();
@@ -68,8 +55,11 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(&windows_, &WindowsIntegration::activated, &hud_, &HudWindow::toggle);
     connect(&media_, &MediaBridge::snapshotChanged, this, [this](const MediaSnapshot& snapshot) {
         if (stopping_) return;
+        const QString preferred = store_.config()["source_id"].toString();
+        if (snapshot.active && !preferred.isEmpty() && snapshot.sourceId != preferred) return;
         latest_ = snapshot; hud_.setSnapshot(snapshot);
-        tray_.setToolTip(snapshot.active ? (snapshot.title + " - " + snapshot.artist).left(120) : QStringLiteral("Island - музыка рядом"));
+        sessionVolume_.setSource(snapshot.active ? snapshot.sourceId : QString{});
+        tray_.setToolTip(snapshot.active ? (snapshot.title + " - " + snapshot.artist).left(120) : QStringLiteral("SCARP ISLAND - музыка рядом"));
     });
     connect(&media_, &MediaBridge::sourcesChanged, this, [this](const MediaSources& sources) {
         if (stopping_) return;
@@ -80,16 +70,22 @@ Application::Application(bool demo, bool background, QString configPath, QObject
         if (demo_) playDemo(action, value); else media_.execute(action, value);
     });
     connect(&hud_, &HudWindow::volumeChanged, this, [this](double value) {
-        QString error;
-        if (demo_ || windows_.setVolume(value, &error)) hud_.setVolume(value); else setStatus(error);
+        hud_.setVolume(value);
+        if (!demo_) sessionVolume_.setVolume(value);
     });
+    connect(&sessionVolume_, &SessionVolume::changed, this, [this](const SessionVolumeState& state) {
+        if (stopping_ || demo_ || state.sourceId != (latest_.active ? latest_.sourceId : QString{})) return;
+        hud_.setVolumeAvailable(state.available);
+        if (state.available) hud_.setVolume(state.muted ? 0.0 : state.volume);
+    });
+    connect(&sessionVolume_, &SessionVolume::error, this, &Application::setStatus);
     connect(&settings_, &SettingsWindow::checkUpdates, this, [this] {
         settings_.setUpdateState(QStringLiteral("Проверяем GitHub Releases..."), false, true);
         updates_.check(store_.config()["update_repository"].toString());
     });
     connect(&settings_, &SettingsWindow::updateInstallRequested, this, [this] {
-        if (QMessageBox::question(&settings_, QStringLiteral("Обновление Island"),
-                QStringLiteral("Скачать проверенный установщик и закрыть Island для обновления?")) == QMessageBox::Yes)
+        if (QMessageBox::question(&settings_, QStringLiteral("Обновление SCARP ISLAND"),
+                QStringLiteral("Скачать проверенный установщик и закрыть SCARP ISLAND для обновления?")) == QMessageBox::Yes)
             updates_.downloadAndInstall();
     });
     connect(&updates_, &UpdateService::statusChanged, this, [this](const QString& message) {
@@ -99,16 +95,17 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(&updates_, &UpdateService::updateAvailable, this, [this](const QString& version, const QString& notes) {
         if (stopping_) return;
         settings_.setUpdateState(QStringLiteral("Доступна версия %1\n%2").arg(version, notes.left(3000)), true, false);
-        tray_.showMessage("Island", QStringLiteral("Доступна версия %1. Откройте раздел обновлений.").arg(version));
+        tray_.showMessage("SCARP ISLAND", QStringLiteral("Доступна версия %1. Откройте раздел обновлений.").arg(version));
     });
     connect(&updates_, &UpdateService::readyToQuit, this, [this] { shutdown(); QCoreApplication::exit(0); });
-    volumeTimer_.setInterval(2500);
+    volumeTimer_.setInterval(VolumeRefreshIntervalMs);
     connect(&volumeTimer_, &QTimer::timeout, this, [this] {
         if (!hud_.isVisible() || demo_) return;
-        const auto value = windows_.volume(); if (value >= 0) hud_.setVolume(value);
+        sessionVolume_.refresh();
     });
     applyConfig(store_.config());
     if (demo_) {
+        hud_.setVolumeAvailable(true);
         latest_.active = true; latest_.title = QStringLiteral("After Hours"); latest_.artist = QStringLiteral("Island Sessions");
         latest_.album = QStringLiteral("Midnight Collection"); latest_.source = "DEMO"; latest_.sourceId = "demo";
         latest_.position = 93; latest_.duration = 247; latest_.playing = true; latest_.canSeek = true;
@@ -116,8 +113,8 @@ Application::Application(bool demo, bool background, QString configPath, QObject
         hud_.setSnapshot(latest_);
         settings_.setStatus(QStringLiteral("Демонстрация интерфейса. Системный плеер и громкость не изменяются."));
     } else {
-        const double volume = windows_.volume();
-        if (volume >= 0) hud_.setVolume(volume);
+        hud_.setVolumeAvailable(false);
+        sessionVolume_.start();
         media_.start(); volumeTimer_.start();
         if (store_.config()["check_updates"].toBool(true))
             QTimer::singleShot(5000, this, [this] {
@@ -142,7 +139,7 @@ void Application::shutdown() {
     if (stopping_) return;
     stopping_ = true;
     updates_.cancel();
-    volumeTimer_.stop(); media_.stop(); tray_.hide(); hud_.hide(); settings_.hide();
+    volumeTimer_.stop(); sessionVolume_.stop(); media_.stop(); tray_.hide(); hud_.hide(); settings_.hide();
 }
 
 void Application::setupTray() {
@@ -156,7 +153,7 @@ void Application::setupTray() {
     trayMenu_->addSeparator();
     trayMenu_->addAction(QStringLiteral("Выход"), this, [this] { shutdown(); QCoreApplication::exit(0); });
     tray_.setContextMenu(trayMenu_.get());
-    tray_.setToolTip(QStringLiteral("Island - музыка рядом"));
+    tray_.setToolTip(QStringLiteral("SCARP ISLAND - музыка рядом"));
     connect(&tray_, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
         if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) showSettings();
         if (reason == QSystemTrayIcon::MiddleClick) hud_.toggle();
@@ -187,7 +184,11 @@ void Application::applyConfig(const QJsonObject& config) {
             effective["hotkey"] = applied_["hotkey"].toString();
             setStatus(error);
         }
-        if (applied_["source_id"] != config["source_id"]) media_.setSource(config["source_id"].toString());
+        if (applied_["source_id"] != config["source_id"]) {
+            sessionVolume_.setSource({});
+            hud_.setVolumeAvailable(false);
+            media_.setSource(config["source_id"].toString());
+        }
         if (applied_.contains("startup") && applied_["startup"] != config["startup"]) {
             if (!WindowsIntegration::setStartup(config["startup"].toBool(), &error)) {
                 effective["startup"] = WindowsIntegration::isStartupEnabled();
@@ -209,7 +210,7 @@ void Application::updateSettingsBackdrop() {
     const auto c = store_.config();
     if (settings_.isVisible() && !settings_.isMinimized() && QGuiApplication::platformName() == "windows")
         WindowsIntegration::applyOverlayBackdrop(settings_.winId(), c["settings_blur"].toBool(true), settings_.rect(),
-            13, settings_.devicePixelRatioF(), c["settings_background"].toString(), c["settings_opacity"].toDouble(.94));
+            14, settings_.devicePixelRatioF(), c["settings_background"].toString(), c["settings_opacity"].toDouble(.94));
 }
 bool Application::eventFilter(QObject* watched, QEvent* event) {
     if (watched == &settings_ && (event->type() == QEvent::Show

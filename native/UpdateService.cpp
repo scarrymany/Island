@@ -26,7 +26,7 @@ constexpr int TransferTimeoutMs = 30000;
 constexpr int MetadataDeadlineMs = 60000;
 constexpr int DownloadDeadlineMs = 15 * 60 * 1000;
 constexpr int MaxRedirects = 5;
-constexpr auto CurrentVersion = "1.0.1";
+constexpr auto CurrentVersion = "1.0.2";
 constexpr auto InstallerExe = "Island-Setup.exe";
 constexpr auto InstallerMsi = "Island-Setup.msi";
 

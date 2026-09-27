@@ -4,6 +4,7 @@
 #include "HudWindow.h"
 #include "MediaBridge.h"
 #include "SettingsWindow.h"
+#include "SessionVolume.h"
 #include "UpdateService.h"
 #include "WindowsIntegration.h"
 #include <QSystemTrayIcon>
@@ -34,6 +35,7 @@ private:
     ConfigStore store_;
     WindowsIntegration windows_;
     MediaBridge media_;
+    SessionVolume sessionVolume_;
     UpdateService updates_;
     SettingsWindow settings_;
     HudWindow hud_;

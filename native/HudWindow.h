@@ -19,6 +19,7 @@ public:
     void applyConfig(const QJsonObject& config);
     void setSnapshot(const MediaSnapshot& snapshot);
     void setVolume(double value);
+    void setVolumeAvailable(bool available);
     void setEditing(bool enabled);
     bool editing() const { return editing_; }
     void reveal(bool manual = false);
@@ -69,6 +70,7 @@ private:
     QJsonObject config_;
     MediaSnapshot snapshot_;
     double volume_ = .5;
+    bool volumeAvailable_ = true;
     bool editing_ = false, manualHidden_ = false, fadingOut_ = false, moved_ = false;
     bool collapsed_ = false, menuOpen_ = false, hoverFromDock_ = false;
     double dockProgress_ = 0;

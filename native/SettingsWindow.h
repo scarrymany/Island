@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AnimationClock.h"
 #include <QHash>
 #include <QJsonValue>
 #include <QList>
@@ -12,6 +13,7 @@ class QCloseEvent;
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
+class QGraphicsOpacityEffect;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -26,6 +28,7 @@ class SettingsWindow final : public QWidget {
 
 public:
     explicit SettingsWindow(ConfigStore* store, QWidget* parent = nullptr);
+    ~SettingsWindow() override;
     void setSources(const QList<QPair<QString, QString>>& sources);
     void setStatus(const QString& message);
     void setUpdateState(const QString& message, bool available = false, bool busy = false);
@@ -42,6 +45,8 @@ signals:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -62,6 +67,10 @@ private:
     void buildUpdates();
     bool put(const QString& key, const QJsonValue& value);
     void updateStyle();
+    void updateMotion();
+    void animatePage();
+    void finishPageAnimation();
+    void refreshHideDelay();
     void refreshMonitors();
     void refreshCoordinates();
     void refreshCollections();
@@ -78,6 +87,11 @@ private:
     bool updateBusy_ = false;
     bool updateAvailable_ = false;
     bool compactSidebar_ = false;
+    bool customHideDelay_ = false;
+    AnimationClock motion_;
+    QMetaObject::Connection refreshRateConnection_;
+    QMetaObject::Connection screenConnection_;
+    QGraphicsOpacityEffect* pageOpacity_ = nullptr;
     QHash<QString, QWidget*> controls_;
     QList<QPair<QString, QString>> sources_;
     QListWidget* navigation_ = nullptr;
@@ -98,6 +112,8 @@ private:
     QComboBox* elementChoice_ = nullptr;
     QComboBox* profileChoice_ = nullptr;
     QComboBox* themeChoice_ = nullptr;
+    QComboBox* hideDelayChoice_ = nullptr;
+    QSpinBox* hideDelayValue_ = nullptr;
     QSpinBox* monitorX_ = nullptr;
     QSpinBox* monitorY_ = nullptr;
     QDoubleSpinBox* elementX_ = nullptr;

@@ -404,6 +404,17 @@ void HudWindow::setEditing(bool enabled) {
     applyNative(); restartHideTimer(); update();
 }
 void HudWindow::setVolume(double value) { volume_ = std::clamp(value, 0.0, 1.0); update(); }
+void HudWindow::setVolumeAvailable(bool available) {
+    if (volumeAvailable_ == available) return;
+    volumeAvailable_ = available;
+    if (!available && !editing_ && dragElement_ == "volume") dragElement_.clear();
+    if (hover_ == "volume") {
+        hover_.clear();
+        setToolTip({});
+        setCursor(Qt::ArrowCursor);
+    }
+    update();
+}
 
 void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
     const bool changed = snapshot.sourceId != snapshot_.sourceId || snapshot.title != snapshot_.title
@@ -551,11 +562,13 @@ void HudWindow::paintElement(QPainter& p, const QString& name, QRectF rect) {
         p.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, Layout::formatTime(snapshot_.estimatedPosition()));
         p.drawText(rect, Qt::AlignRight | Qt::AlignVCenter, snapshot_.duration > 0 ? Layout::formatTime(snapshot_.duration) : "--:--");
     } else if (name == "volume") {
+        if (!volumeAvailable_) p.setOpacity(p.opacity() * 0.35);
         icon(p, name, QRectF(rect.x(), rect.y(), 24, rect.height()), ink(config_["icon_color"].toString()), std::min(20, config_["icon_size"].toInt(18)));
         p.setPen(QPen(ink(secondary, .25), 3, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(QPointF(rect.x() + 31, rect.center().y()), QPointF(rect.right() - 2, rect.center().y()));
         p.setPen(QPen(ink(config_["icon_color"].toString(), .8), 3, Qt::SolidLine, Qt::RoundCap));
-        p.drawLine(QPointF(rect.x() + 31, rect.center().y()), QPointF(rect.x() + 31 + (rect.width() - 33) * volume_, rect.center().y()));
+        if (volumeAvailable_)
+            p.drawLine(QPointF(rect.x() + 31, rect.center().y()), QPointF(rect.x() + 31 + (rect.width() - 33) * volume_, rect.center().y()));
     }
     p.restore();
 }
@@ -599,6 +612,7 @@ void HudWindow::mousePressEvent(QMouseEvent* e) {
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     moved_ = false;
     if (editing_ && !hit.isEmpty()) { dragElement_ = hit; dragOrigin_ = point - elementRects()[hit].topLeft(); }
+    else if (hit == "volume" && !volumeAvailable_) dragElement_.clear();
     else if (!Transport.contains(hit) && hit != "progress" && hit != "volume") dragWindow_ = e->globalPosition().toPoint() - pos();
     else dragElement_ = hit;
 }
@@ -608,9 +622,11 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
     if (hover_ != hit) {
         hover_ = hit;
         const QMap<QString, QString> tips{{"play", QStringLiteral("Воспроизведение / пауза")}, {"next", QStringLiteral("Следующий трек")},
-            {"previous", QStringLiteral("Предыдущий трек")}, {"progress", QStringLiteral("Перемотка")}, {"volume", QStringLiteral("Системная громкость. Нажатие или колесо мыши.")}};
+            {"previous", QStringLiteral("Предыдущий трек")}, {"progress", QStringLiteral("Перемотка")},
+            {"volume", volumeAvailable_ ? QStringLiteral("Громкость текущего приложения. Для сайтов - всего браузера.")
+                                        : QStringLiteral("У этого источника пока нет доступной звуковой сессии.")}};
         setToolTip(tips.value(hit, QStringLiteral("Перетащите островок. Правая кнопка - меню.")));
-        setCursor(editing_ ? Qt::SizeAllCursor : Transport.contains(hit) || hit == "progress" || hit == "volume" ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        setCursor(editing_ ? Qt::SizeAllCursor : Transport.contains(hit) || hit == "progress" || (hit == "volume" && volumeAvailable_) ? Qt::PointingHandCursor : Qt::ArrowCursor);
         animate("hover", 0, 1, [this](double a) { hoverAlpha_ = a; update(); });
     }
     if (!dragElement_.isEmpty() && editing_ && dragOrigin_) {
@@ -652,12 +668,13 @@ void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
     dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); restartHideTimer();
 }
 void HudWindow::volumeAt(const QPointF& point) {
+    if (!volumeAvailable_) return;
     const auto rect = elementRects().value("volume");
     if (rect.isValid()) emit volumeChanged(std::clamp((point.x() - rect.x() - 31) / (rect.width() - 33), 0.0, 1.0));
 }
 void HudWindow::wheelEvent(QWheelEvent* e) {
     if (collapsed_ || dockProgress_ > 0) return;
-    if (!editing_ && hitTest(localPoint(e->position())) == "volume") {
+    if (!editing_ && volumeAvailable_ && hitTest(localPoint(e->position())) == "volume") {
         emit volumeChanged(std::clamp(volume_ + e->angleDelta().y() / 120.0 * .02, 0.0, 1.0)); e->accept();
     }
 }
@@ -665,7 +682,7 @@ void HudWindow::contextMenuEvent(QContextMenuEvent* e) {
     menuOpen_ = true;
     hideTimer_.stop();
     QMenu menu(this);
-    menu.addAction(QStringLiteral("Настройки Island"), this, &HudWindow::settingsRequested);
+    menu.addAction(QStringLiteral("Настройки SCARP ISLAND"), this, &HudWindow::settingsRequested);
     auto* edit = menu.addAction(QStringLiteral("Редактировать расположение")); edit->setCheckable(true); edit->setChecked(editing_);
     connect(edit, &QAction::triggered, this, &HudWindow::editingChanged);
     menu.addAction(QStringLiteral("Скрыть островок"), this, [this] { conceal(true); });

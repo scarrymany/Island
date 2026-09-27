@@ -32,7 +32,8 @@ void logMessage(QtMsgType type, const QMessageLogContext&, const QString& messag
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName("Island"); app.setOrganizationName("Island"); app.setApplicationVersion("1.0.1");
+    app.setApplicationName("Island"); app.setOrganizationName("Island"); app.setApplicationVersion("1.0.2");
+    app.setApplicationDisplayName("SCARP ISLAND");
     app.setQuitOnLastWindowClosed(false);
     QTranslator translator;
     if (translator.load(QLocale("ru"), "qt", "_", QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
@@ -42,9 +43,9 @@ int main(int argc, char* argv[]) {
     logPath = QDir(dataDirectory).filePath("island.log");
     qInstallMessageHandler(logMessage);
     QCommandLineParser parser;
-    parser.setApplicationDescription("Island - native Windows music overlay"); parser.addHelpOption(); parser.addVersionOption();
+    parser.setApplicationDescription("SCARP ISLAND - native Windows music overlay"); parser.addHelpOption(); parser.addVersionOption();
     parser.addOption({"background", "Start in the system tray."});
-    parser.addOption({"quit", "Quit the running Island instance."});
+    parser.addOption({"quit", "Quit the running SCARP ISLAND instance."});
     parser.addOption({"demo", "Use isolated demonstration data without controlling system media."});
     parser.addOption({"smoke-test", "Capture and exit after the interface has initialized."});
     parser.addOption({"capture", "Save HUD and settings screenshots to this directory.", "directory"});
@@ -73,13 +74,13 @@ int main(int argc, char* argv[]) {
                 if (socket.waitForConnected(750)) { socket.write("show\n"); socket.waitForBytesWritten(500); return 0; }
                 socket.abort();
             }
-            QMessageBox::information(nullptr, "Island", QStringLiteral("Island уже работает. Откройте настройки через значок в трее."));
+            QMessageBox::information(nullptr, "SCARP ISLAND", QStringLiteral("SCARP ISLAND уже работает. Откройте настройки через значок в трее."));
             return 0;
         }
         QLocalServer::removeServer(serverName);
         server.setSocketOptions(QLocalServer::UserAccessOption);
         if (!server.listen(serverName)) {
-            QMessageBox::critical(nullptr, "Island", QStringLiteral("Не удалось создать канал экземпляра: %1").arg(server.errorString()));
+            QMessageBox::critical(nullptr, "SCARP ISLAND", QStringLiteral("Не удалось создать канал экземпляра: %1").arg(server.errorString()));
             return 1;
         }
     }

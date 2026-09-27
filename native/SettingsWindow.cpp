@@ -1,5 +1,7 @@
 #include "SettingsWindow.h"
 #include "ConfigStore.h"
+#include "AppAssets.h"
+#include "SettingsControls.h"
 #include "Layout.h"
 
 #include <QApplication>
@@ -12,8 +14,10 @@
 #include <QFontComboBox>
 #include <QFormLayout>
 #include <QFrame>
-#include <QGridLayout>
 #include <QGuiApplication>
+#include <QGraphicsOpacityEffect>
+#include <QShowEvent>
+#include <QHideEvent>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -30,71 +34,15 @@
 #include <QSignalBlocker>
 #include <QSizeGrip>
 #include <QSpinBox>
+#include <QSlider>
 #include <QStackedWidget>
 #include <QStandardPaths>
-#include <QStyleOptionButton>
 #include <QVBoxLayout>
 #include <QWindow>
 
 #include <algorithm>
 
 namespace {
-void paintSteps(QAbstractSpinBox* spin)
-{
-    QPainter painter(spin);
-    painter.setRenderHint(QPainter::Antialiasing);
-    const QColor color = spin->palette().color(spin->isEnabled() ? QPalette::Text : QPalette::PlaceholderText);
-    painter.setPen(QPen(color, 1.2, Qt::SolidLine, Qt::RoundCap));
-    const double x = spin->width() - 12.0;
-    const double upper = spin->height() * 0.25;
-    const double lower = spin->height() * 0.75;
-    painter.drawLine(QPointF(x - 3, upper), QPointF(x + 3, upper));
-    painter.drawLine(QPointF(x, upper - 3), QPointF(x, upper + 3));
-    painter.drawLine(QPointF(x - 3, lower), QPointF(x + 3, lower));
-}
-
-class NumberSpinBox final : public QSpinBox {
-protected:
-    void paintEvent(QPaintEvent* event) override
-    {
-        QSpinBox::paintEvent(event);
-        paintSteps(this);
-    }
-};
-
-class DecimalSpinBox final : public QDoubleSpinBox {
-protected:
-    void paintEvent(QPaintEvent* event) override
-    {
-        QDoubleSpinBox::paintEvent(event);
-        paintSteps(this);
-    }
-};
-
-class ToggleCheckBox final : public QCheckBox {
-public:
-    using QCheckBox::QCheckBox;
-
-protected:
-    void paintEvent(QPaintEvent* event) override
-    {
-        QCheckBox::paintEvent(event);
-        if (!isChecked())
-            return;
-        QStyleOptionButton option;
-        initStyleOption(&option);
-        const QRect rect = style()->subElementRect(QStyle::SE_CheckBoxIndicator, &option, this);
-        QPainter painter(this);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setPen(QPen(QColor(property("markColor").toString()), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        QPolygonF mark;
-        mark << QPointF(rect.left() + rect.width() * 0.25, rect.top() + rect.height() * 0.52)
-             << QPointF(rect.left() + rect.width() * 0.44, rect.top() + rect.height() * 0.70)
-             << QPointF(rect.left() + rect.width() * 0.76, rect.top() + rect.height() * 0.32);
-        painter.drawPolyline(mark);
-    }
-};
-
 const QList<QPair<QString, QString>> ElementNames = {
     {"cover", QStringLiteral("Обложка")}, {"title", QStringLiteral("Название трека")},
     {"artist", QStringLiteral("Исполнитель")}, {"album", QStringLiteral("Альбом")},
@@ -145,7 +93,10 @@ QIcon navigationIcon(char16_t glyph, const QColor& color)
     painter.setFont(font);
     painter.setPen(color);
     painter.drawText(QRect(0, 0, 20, 20), Qt::AlignCenter, QString(QChar(glyph)));
-    return QIcon(pixmap);
+    QIcon icon;
+    for (const auto mode : {QIcon::Normal, QIcon::Active, QIcon::Selected})
+        icon.addPixmap(pixmap, mode);
+    return icon;
 }
 
 QJsonValue settingValue(const QJsonObject& config, const QString& key)
@@ -170,8 +121,9 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     : QWidget(parent), store_(store)
 {
     Q_ASSERT(store_);
+    AppAssets::settingsFontFamily();
     setObjectName("SettingsWindow");
-    setWindowTitle(QStringLiteral("Island - настройки"));
+    setWindowTitle(QStringLiteral("SCARP ISLAND - настройки"));
     const auto* initialScreen = QGuiApplication::primaryScreen();
     const QSize available = initialScreen ? initialScreen->availableGeometry().size() - QSize(32, 32) : QSize(1080, 800);
     setMinimumSize(QSize(820, 520).boundedTo(available));
@@ -194,7 +146,7 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     auto* titleLayout = new QHBoxLayout(titleBar_);
     titleLayout->setContentsMargins(20, 0, 6, 0);
     titleLayout->setSpacing(0);
-    auto* caption = new QLabel(QStringLiteral("Island - настройки"));
+    auto* caption = new QLabel(QStringLiteral("SCARP ISLAND - настройки"));
     caption->setObjectName("windowCaption");
     caption->setAttribute(Qt::WA_TransparentForMouseEvents);
     titleLayout->addWidget(caption, 1);
@@ -235,9 +187,20 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     sidebarLayout_ = new QVBoxLayout(sidebar);
     sidebarLayout_->setContentsMargins(16, 28, 16, 20);
     sidebarLayout_->setSpacing(8);
-    auto* brand = new QLabel("island");
+    auto* brandRow = new QWidget;
+    auto* brandLayout = new QHBoxLayout(brandRow);
+    brandLayout->setContentsMargins(8, 0, 0, 0);
+    brandLayout->setSpacing(10);
+    auto* logo = new QLabel;
+    logo->setObjectName("brandIcon");
+    logo->setPixmap(AppAssets::icon().pixmap(QSize(38, 38), devicePixelRatioF()));
+    logo->setFixedSize(38, 38);
+    brandLayout->addWidget(logo);
+    auto* brand = new QLabel("SCARP\nISLAND");
     brand->setObjectName("brand");
-    sidebarLayout_->addWidget(brand);
+    brandLayout->addWidget(brand, 1);
+    sidebarLayout_->addWidget(brandRow);
+    setWindowIcon(AppAssets::icon());
     sidebarSubtitle_ = description(QStringLiteral("Музыка всегда рядом"));
     sidebarLayout_->addWidget(sidebarSubtitle_);
     sidebarSpacer_ = new QSpacerItem(0, 28, QSizePolicy::Minimum, QSizePolicy::Fixed);
@@ -273,12 +236,18 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     heading_ = new QLabel;
     heading_->setObjectName("heading");
     header->addWidget(heading_, 1);
-    auto* toggle = new QPushButton(QStringLiteral("Показать / скрыть HUD"));
+    auto* toggle = new QPushButton("HUD");
+    toggle->setIcon(navigationIcon(u'\uE7F4', QColor("#D4D4D4")));
+    toggle->setAccessibleName(QStringLiteral("Показать / скрыть музыкальный островок"));
     toggle->setToolTip(QStringLiteral("Переключить видимость музыкального островка"));
     connect(toggle, &QPushButton::clicked, this, &SettingsWindow::toggleHud);
     header->addWidget(toggle);
     contentLayout->addLayout(header);
     pages_ = new QStackedWidget;
+    pages_->setObjectName("settingsPages");
+    pageOpacity_ = new QGraphicsOpacityEffect(pages_);
+    pageOpacity_->setOpacity(1.0);
+    pages_->setGraphicsEffect(pageOpacity_);
     contentLayout->addWidget(pages_, 1);
     bodyLayout->addWidget(content, 1);
 
@@ -310,6 +279,7 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
             return;
         heading_->setText(titles[index]);
         pages_->setCurrentIndex(index);
+        animatePage();
     });
     connect(store_, &ConfigStore::configChanged, this, [this] { refresh(); });
     connect(qApp, &QGuiApplication::screenAdded, this, [this] { refresh(); });
@@ -365,38 +335,25 @@ void SettingsWindow::addNumber(QFormLayout* form, const QString& label, const QS
                                const QString& suffix, bool decimal)
 {
     const auto range = ConfigStore::numericRange(key);
-    if (decimal) {
-        auto* spin = new DecimalSpinBox;
-        spin->setObjectName(key);
-        spin->setRange(range.first, range.second);
-        spin->setDecimals(2);
-        spin->setSingleStep(key == "border_width" ? 0.25 : 0.05);
-        spin->setSuffix(suffix);
-        spin->setKeyboardTracking(false);
-        spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
-        spin->setMinimumWidth(156);
-        controls_.insert(key, spin);
-        connect(spin, &QDoubleSpinBox::valueChanged, this, [this, key](double value) { put(key, value); });
-        form->addRow(label, spin);
-    } else {
-        auto* spin = new NumberSpinBox;
-        spin->setObjectName(key);
-        spin->setRange(static_cast<int>(range.first), static_cast<int>(range.second));
-        spin->setSuffix(suffix);
-        spin->setKeyboardTracking(false);
-        spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
-        spin->setMinimumWidth(156);
-        if (key == "auto_hide_seconds")
-            spin->setSpecialValueText(QStringLiteral("Отключено"));
-        controls_.insert(key, spin);
-        connect(spin, &QSpinBox::valueChanged, this, [this, key](int value) { put(key, value); });
-        form->addRow(label, spin);
-    }
+    auto* slider = new SettingsSlider;
+    slider->setObjectName(key);
+    slider->setAccessibleName(label);
+    slider->setDecimals(decimal ? 2 : 0);
+    slider->setRange(range.first, range.second);
+    slider->setSingleStep(decimal ? (key == "border_width" ? 0.25 : 0.01) : 1);
+    slider->setSuffix(suffix);
+    slider->slider()->setAccessibleName(label);
+    slider->editor()->setAccessibleName(label + QStringLiteral(" - точное значение"));
+    controls_.insert(key, slider);
+    connect(slider, &SettingsSlider::valueChanged, this, [this, key, decimal](double value) {
+        put(key, decimal ? QJsonValue(value) : QJsonValue(qRound(value)));
+    });
+    form->addRow(label, slider);
 }
 
 void SettingsWindow::addToggle(QFormLayout* form, const QString& label, const QString& key)
 {
-    auto* toggle = new ToggleCheckBox;
+    auto* toggle = new SettingsToggle;
     toggle->setObjectName(key);
     toggle->setAccessibleName(label);
     controls_.insert(key, toggle);
@@ -422,7 +379,7 @@ void SettingsWindow::addColor(QFormLayout* form, const QString& label, const QSt
 QComboBox* SettingsWindow::addChoice(QFormLayout* form, const QString& label, const QString& key,
                                     const QList<QPair<QString, QString>>& choices)
 {
-    auto* combo = new QComboBox;
+    auto* combo = new SettingsChoice;
     combo->setObjectName(key);
     combo->setMinimumWidth(170);
     combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -480,7 +437,7 @@ void SettingsWindow::buildAppearance()
     addNumber(compact, QStringLiteral("Непрозрачность"), "compact_opacity", {}, true);
     compact->addRow(description(QStringLiteral("Размеры задаются до масштабирования. Видимая полоска не может быть выше полной панели. Таймер сворачивания находится в разделе «Система».")));
     auto* text = addGroup(page, QStringLiteral("Текст и элементы"));
-    auto* fonts = new QFontComboBox;
+    auto* fonts = new SettingsFontChoice;
     fonts->setObjectName("font_family");
     controls_.insert("font_family", fonts);
     connect(fonts, &QFontComboBox::currentFontChanged, this, [this](const QFont& font) { put("font_family", font.family()); });
@@ -517,21 +474,21 @@ void SettingsWindow::buildLayout()
     });
     layout->addRow(editLayout_);
     layout->addRow(description(QStringLiteral("Во время редактирования элементы можно перемещать мышью. Координаты сохраняются автоматически.")));
-    elementChoice_ = new QComboBox;
+    elementChoice_ = new SettingsChoice;
     for (const auto& element : ElementNames)
         elementChoice_->addItem(element.second, element.first);
     layout->addRow(QStringLiteral("Элемент"), elementChoice_);
     auto* coordinates = new QWidget;
     auto* coordinateLayout = new QHBoxLayout(coordinates);
     coordinateLayout->setContentsMargins(0, 0, 0, 0);
-    elementX_ = new DecimalSpinBox;
-    elementY_ = new DecimalSpinBox;
+    elementX_ = new QDoubleSpinBox;
+    elementY_ = new QDoubleSpinBox;
     for (auto* spin : {elementX_, elementY_}) {
         spin->setRange(0, 32768);
         spin->setDecimals(1);
         spin->setSuffix(" px");
         spin->setKeyboardTracking(false);
-        spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
+        spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         coordinateLayout->addWidget(spin);
         connect(spin, &QDoubleSpinBox::valueChanged, this, [this] { updateElementPosition(); });
     }
@@ -544,20 +501,8 @@ void SettingsWindow::buildLayout()
     layout->addRow(reset);
 
     auto* visible = addGroup(page, QStringLiteral("Видимые элементы"));
-    auto* toggles = new QWidget;
-    auto* grid = new QGridLayout(toggles);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setSpacing(14);
-    for (int index = 0; index < ElementNames.size(); ++index) {
-        const auto& entry = ElementNames[index];
-        const QString key = "visible/" + entry.first;
-        auto* checkbox = new ToggleCheckBox(entry.second);
-        checkbox->setObjectName(key);
-        controls_.insert(key, checkbox);
-        connect(checkbox, &QCheckBox::toggled, this, [this, key](bool value) { put(key, value); });
-        grid->addWidget(checkbox, index / 2, index % 2);
-    }
-    visible->addRow(toggles);
+    for (const auto& entry : ElementNames)
+        addToggle(visible, entry.second, "visible/" + entry.first);
     auto* display = addGroup(page, QStringLiteral("Монитор и положение"));
     monitorChoice_ = addChoice(display, QStringLiteral("Монитор"), "monitor", {});
     addChoice(display, QStringLiteral("Привязка"), "anchor", {
@@ -567,13 +512,13 @@ void SettingsWindow::buildLayout()
     auto* monitorCoordinates = new QWidget;
     auto* monitorLayout = new QHBoxLayout(monitorCoordinates);
     monitorLayout->setContentsMargins(0, 0, 0, 0);
-    monitorX_ = new NumberSpinBox;
-    monitorY_ = new NumberSpinBox;
+    monitorX_ = new QSpinBox;
+    monitorY_ = new QSpinBox;
     for (auto* spin : {monitorX_, monitorY_}) {
         spin->setRange(-32768, 32768);
         spin->setSuffix(" px");
         spin->setKeyboardTracking(false);
-        spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
+        spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         monitorLayout->addWidget(spin);
         connect(spin, &QSpinBox::valueChanged, this, [this] { updateMonitorPosition(); });
     }
@@ -589,7 +534,11 @@ void SettingsWindow::buildAnimations()
     auto* timing = addGroup(page, QStringLiteral("Плавность"));
     addNumber(timing, QStringLiteral("Длительность переходов"), "animation_duration", QStringLiteral(" мс"));
     timing->addRow(description(QStringLiteral("Эта длительность применяется и к сворачиванию островка у верхнего края.")));
-    auto* effects = addGroup(page, QStringLiteral("Эффекты"));
+    auto* panel = addGroup(page, QStringLiteral("Панель настроек"));
+    addToggle(panel, QStringLiteral("Плавные переходы"), "settings_animations");
+    addNumber(panel, QStringLiteral("Длительность"), "settings_animation_duration", QStringLiteral(" мс"));
+    panel->addRow(description(QStringLiteral("Переходы страниц и переключатели обновляются с частотой монитора, на котором открыты настройки.")));
+    auto* effects = addGroup(page, QStringLiteral("Эффекты островка"));
     const QList<QPair<QString, QString>> names = {
         {"appear", QStringLiteral("Появление HUD")}, {"disappear", QStringLiteral("Исчезновение HUD")},
         {"cover", QStringLiteral("Смена обложки")}, {"title", QStringLiteral("Смена названия трека")},
@@ -603,7 +552,7 @@ void SettingsWindow::buildAnimations()
 
 void SettingsWindow::buildSources()
 {
-    auto* page = addPage(QStringLiteral("Источники"), QStringLiteral("Island получает музыку из системных медиасессий Windows. Поддерживаются Spotify, браузеры с SoundCloud и другие совместимые приложения."));
+    auto* page = addPage(QStringLiteral("Источники"), QStringLiteral("SCARP ISLAND получает музыку из системных медиасессий Windows. Поддерживаются Spotify, браузеры с SoundCloud и другие совместимые приложения."));
     auto* source = addGroup(page, QStringLiteral("Воспроизведение"));
     sourceChoice_ = addChoice(source, QStringLiteral("Источник музыки"), "source_id", {{"", QStringLiteral("Автоматически")}});
     source->addRow(description(QStringLiteral("В автоматическом режиме выбирается активное музыкальное приложение. Чтобы закрепить конкретный проигрыватель, выберите его в списке.")));
@@ -611,13 +560,16 @@ void SettingsWindow::buildSources()
     auto* state = addGroup(page, QStringLiteral("Состояние подключения"));
     state->addRow(sourceStatus_);
     state->addRow(description(QStringLiteral("Список источников обновляется автоматически. Если вкладка браузера не отображается, начните воспроизведение и проверьте поддержку системного управления медиа в браузере.")));
+    auto* volume = addGroup(page, QStringLiteral("Громкость источника"));
+    volume->addRow(description(QStringLiteral("Ползунок на островке меняет громкость выбранного приложения в микшере Windows. Для YouTube и SoundCloud изменяется громкость всего браузера, включая другие вкладки. Общая громкость устройства остаётся прежней.")));
+    volume->addRow(description(QStringLiteral("Если приложение не создало звуковую сессию или его не удалось определить, ползунок временно недоступен. Запустите воспроизведение в нужном источнике.")));
 }
 
 void SettingsWindow::buildProfiles()
 {
     auto* page = addPage(QStringLiteral("Профили"), QStringLiteral("Сохраняйте разные варианты HUD для работы и игр. Тема меняет оформление, а профиль хранит все настройки."));
     auto* profiles = addGroup(page, QStringLiteral("Профили HUD"));
-    profileChoice_ = new QComboBox;
+    profileChoice_ = new SettingsChoice;
     profiles->addRow(QStringLiteral("Сохранённый профиль"), profileChoice_);
     auto* load = new QPushButton(QStringLiteral("Применить"));
     auto* save = new QPushButton(QStringLiteral("Сохранить как..."));
@@ -644,7 +596,7 @@ void SettingsWindow::buildProfiles()
     profileStatus_ = description({});
     profiles->addRow(profileStatus_);
     auto* themes = addGroup(page, QStringLiteral("Темы оформления"));
-    themeChoice_ = new QComboBox;
+    themeChoice_ = new SettingsChoice;
     themes->addRow(QStringLiteral("Тема"), themeChoice_);
     auto* apply = new QPushButton(QStringLiteral("Применить"));
     auto* saveThemeButton = new QPushButton(QStringLiteral("Сохранить тему..."));
@@ -705,23 +657,82 @@ void SettingsWindow::buildSystem()
     idle->addRow(description(QStringLiteral("При бездействии островок уменьшается и уходит за верхний край выбранного монитора. На экране остаётся узкая полоска, которая раскрывает HUD при наведении мыши.")));
     auto* behavior = addGroup(page, QStringLiteral("Поведение островка"));
     auto* hotkey = new QKeySequenceEdit;
+    hotkey->setAttribute(Qt::WA_StyledBackground);
     hotkey->setObjectName("hotkey");
     hotkey->setMaximumSequenceLength(1);
-    hotkey->setClearButtonEnabled(true);
+    hotkey->setClearButtonEnabled(false);
     controls_.insert("hotkey", hotkey);
     connect(hotkey, &QKeySequenceEdit::editingFinished, this, [this, hotkey] {
         put("hotkey", hotkey->keySequence().toString(QKeySequence::PortableText));
     });
-    behavior->addRow(QStringLiteral("Показать / скрыть HUD"), hotkey);
-    addNumber(behavior, QStringLiteral("Полностью скрыть через"), "auto_hide_seconds", QStringLiteral(" сек"));
-    behavior->addRow(description(QStringLiteral("Значение 0 отключает таймер полного скрытия. Если включено сворачивание при бездействии, вместо полного исчезновения остаётся полоска у верхнего края.")));
+    auto* hotkeyRow = new QWidget;
+    auto* hotkeyLayout = new QHBoxLayout(hotkeyRow);
+    hotkeyLayout->setContentsMargins(0, 0, 0, 0);
+    hotkeyLayout->setSpacing(8);
+    hotkeyLayout->addWidget(hotkey, 1);
+    auto* restoreHotkey = new QPushButton(QStringLiteral("Вернуть"));
+    restoreHotkey->setObjectName("restoreHotkey");
+    restoreHotkey->setToolTip(QStringLiteral("Вернуть Ctrl+Alt+M"));
+    restoreHotkey->setAccessibleName(restoreHotkey->toolTip());
+    connect(restoreHotkey, &QPushButton::clicked, this, [this] {
+        put("hotkey", ConfigStore::defaults().value("hotkey"));
+    });
+    hotkeyLayout->addWidget(restoreHotkey);
+    behavior->addRow(QStringLiteral("Показать / скрыть HUD"), hotkeyRow);
+    behavior->addRow(description(QStringLiteral("Нажмите поле и новое сочетание клавиш. Кнопка «Вернуть» восстанавливает Ctrl+Alt+M.")));
+    hideDelayChoice_ = new SettingsChoice;
+    hideDelayChoice_->setObjectName("auto_hide_seconds");
+    hideDelayChoice_->setAccessibleName(QStringLiteral("Полностью скрыть через"));
+    hideDelayChoice_->addItem(QStringLiteral("Не скрывать"), 0);
+    for (int seconds : {5, 10, 15, 30, 60, 120, 300})
+        hideDelayChoice_->addItem(seconds < 60 ? QStringLiteral("Через %1 сек").arg(seconds)
+                                              : QStringLiteral("Через %1 мин").arg(seconds / 60), seconds);
+    hideDelayChoice_->addItem(QStringLiteral("Свой интервал"), -1);
+    hideDelayValue_ = new QSpinBox;
+    hideDelayValue_->setObjectName("customHideDelay");
+    hideDelayValue_->setAccessibleName(QStringLiteral("Свой интервал скрытия в секундах"));
+    hideDelayValue_->setRange(1, 3600);
+    hideDelayValue_->setSuffix(QStringLiteral(" сек"));
+    hideDelayValue_->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    hideDelayValue_->setKeyboardTracking(false);
+    hideDelayValue_->hide();
+    auto* delayRow = new QWidget;
+    auto* delayLayout = new QHBoxLayout(delayRow);
+    delayLayout->setContentsMargins(0, 0, 0, 0);
+    delayLayout->addWidget(hideDelayChoice_, 1);
+    delayLayout->addWidget(hideDelayValue_);
+    connect(hideDelayChoice_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (refreshing_ || index < 0) return;
+        const int seconds = hideDelayChoice_->itemData(index).toInt();
+        customHideDelay_ = seconds < 0;
+        hideDelayValue_->setVisible(customHideDelay_);
+        if (customHideDelay_) {
+            hideDelayValue_->setFocus();
+            hideDelayValue_->selectAll();
+            put("auto_hide_seconds", hideDelayValue_->value());
+        } else {
+            put("auto_hide_seconds", seconds);
+        }
+    });
+    connect(hideDelayValue_, &QSpinBox::valueChanged, this, [this](int seconds) {
+        put("auto_hide_seconds", seconds);
+    });
+    behavior->addRow(QStringLiteral("Полностью скрыть через"), delayRow);
+    behavior->addRow(description(QStringLiteral("Если включено сворачивание при бездействии, островок остаётся полоской у края. Для полного скрытия отключите сворачивание выше.")));
     addToggle(behavior, QStringLiteral("Пропускать клики сквозь HUD"), "click_through");
     addToggle(behavior, QStringLiteral("Запускать вместе с Windows"), "startup");
-    behavior->addRow(description(QStringLiteral("При пропуске кликов управление доступно через исходный проигрыватель. Свёрнутая полоска остаётся доступной для наведения. Настройки открываются через значок Island в трее.")));
+    behavior->addRow(description(QStringLiteral("При пропуске кликов управление доступно через исходный проигрыватель. Свёрнутая полоска остаётся доступной для наведения. Настройки открываются через значок SCARP ISLAND в трее.")));
     auto* panel = addGroup(page, QStringLiteral("Оформление настроек"));
     addColor(panel, QStringLiteral("Фон окна"), "settings_background");
     addColor(panel, QStringLiteral("Акцент интерфейса"), "settings_accent");
     addColor(panel, QStringLiteral("Цвет текста"), "settings_text");
+    auto* panelFonts = new SettingsFontChoice;
+    panelFonts->setObjectName("settings_font_family");
+    controls_.insert("settings_font_family", panelFonts);
+    connect(panelFonts, &QFontComboBox::currentFontChanged, this, [this](const QFont& font) {
+        put("settings_font_family", font.family());
+    });
+    panel->addRow(QStringLiteral("Шрифт интерфейса"), panelFonts);
     addNumber(panel, QStringLiteral("Размер шрифта"), "settings_font_size", " pt");
     addNumber(panel, QStringLiteral("Непрозрачность окна"), "settings_opacity", {}, true);
     addToggle(panel, QStringLiteral("Размытие системного фона"), "settings_blur");
@@ -731,7 +742,7 @@ void SettingsWindow::buildSystem()
 
 void SettingsWindow::buildUpdates()
 {
-    auto* page = addPage(QStringLiteral("Обновления"), QStringLiteral("Проверка новых версий Island через GitHub Releases."));
+    auto* page = addPage(QStringLiteral("Обновления"), QStringLiteral("Проверка новых версий SCARP ISLAND через GitHub Releases."));
     auto* settings = addGroup(page, QStringLiteral("Источник обновлений"));
     auto* repository = new QLineEdit;
     repository->setObjectName("update_repository");
@@ -743,9 +754,9 @@ void SettingsWindow::buildUpdates()
     });
     settings->addRow(QStringLiteral("Репозиторий GitHub"), repository);
     addToggle(settings, QStringLiteral("Проверять при запуске"), "check_updates");
-    settings->addRow(description(QStringLiteral("Укажите репозиторий, в котором публикуются релизы вашей сборки Island. Пустое поле отключает проверку обновлений.")));
+    settings->addRow(description(QStringLiteral("Укажите репозиторий, в котором публикуются релизы вашей сборки SCARP ISLAND. Пустое поле отключает проверку обновлений.")));
     auto* current = addGroup(page, QStringLiteral("Доступная версия"));
-    current->addRow(description(QStringLiteral("Установлена: Island %1").arg(QApplication::applicationVersion())));
+    current->addRow(description(QStringLiteral("Установлена: SCARP ISLAND %1").arg(QApplication::applicationVersion())));
     updateStatus_ = description(QStringLiteral("Проверка ещё не выполнялась"));
     current->addRow(updateStatus_);
     updateCheck_ = new QPushButton(QStringLiteral("Проверить обновления"));
@@ -840,7 +851,9 @@ void SettingsWindow::refresh()
         const auto value = settingValue(config, it.key());
         QWidget* widget = it.value();
         const QSignalBlocker blocker(widget);
-        if (auto* toggle = qobject_cast<QCheckBox*>(widget))
+        if (auto* slider = qobject_cast<SettingsSlider*>(widget))
+            slider->setValue(value.toDouble());
+        else if (auto* toggle = qobject_cast<QCheckBox*>(widget))
             toggle->setChecked(value.toBool());
         else if (auto* decimal = qobject_cast<QDoubleSpinBox*>(widget))
             decimal->setValue(value.toDouble());
@@ -859,6 +872,7 @@ void SettingsWindow::refresh()
     }
     refreshCoordinates();
     refreshCollections();
+    refreshHideDelay();
     updateStyle();
     const bool custom = config.value("layout").toString() == "custom";
     elementX_->setEnabled(custom);
@@ -876,6 +890,7 @@ void SettingsWindow::refresh()
     controls_.value("border_opacity")->setEnabled(borderEnabled);
     updateCheck_->setEnabled(!updateBusy_ && !config.value("update_repository").toString().isEmpty());
     updateInstall_->setEnabled(updateAvailable_ && !updateBusy_);
+    controls_.value("settings_animation_duration")->setEnabled(config.value("settings_animations").toBool());
     refreshing_ = false;
     if (!custom && editLayout_->isChecked())
         editLayout_->setChecked(false);
@@ -1019,41 +1034,54 @@ void SettingsWindow::updateStyle()
     const QString accent = config.value("settings_accent").toString();
     const QString muted = blended(foreground, background, 0.60);
     const QString surface = blended(foreground, background, 0.045);
-    const QString border = blended(foreground, background, 0.10);
-    const QString hover = blended(foreground, background, 0.10);
-    const QString selected = blended(QColor(accent), background, 0.18);
+    const QString border = blended(foreground, background, 0.09);
+    const QString hover = blended(foreground, background, 0.07);
+    const QString selected = blended(QColor(accent), background, 0.07);
     const int fontSize = config.value("settings_font_size").toInt();
     const int alpha = qRound(config.value("settings_opacity").toDouble() * 255);
     const QString panelBackground = QStringLiteral("rgba(%1,%2,%3,%4)").arg(background.red()).arg(background.green()).arg(background.blue()).arg(alpha);
     const QString accentText = QColor(accent).lightnessF() > 0.5 ? "#11121A" : "#FFFFFF";
-    for (auto* control : controls_) {
-        if (auto* checkbox = qobject_cast<QCheckBox*>(control))
-            checkbox->setProperty("markColor", accentText);
-    }
-    setStyleSheet(QStringLiteral(R"(
-        QWidget { color: %1; font-family: 'Segoe UI'; font-size: %2pt; }
+    AppAssets::settingsFontFamily();
+    QFont panelFont(config.value("settings_font_family").toString());
+    panelFont.setPointSize(fontSize);
+    panelFont.setWeight(QFont::DemiBold);
+    if (font() != panelFont) setFont(panelFont);
+    updateMotion();
+    for (auto* toggle : findChildren<SettingsToggle*>())
+        toggle->setColors(QColor(accent), QColor(hover), foreground);
+    for (auto* slider : findChildren<SettingsSlider*>())
+        slider->setColors(QColor(accent), QColor(hover), foreground);
+    for (auto* choice : findChildren<SettingsChoice*>())
+        choice->setColors(QColor(accent), QColor(hover), foreground);
+    for (auto* choice : findChildren<SettingsFontChoice*>())
+        choice->setColors(QColor(accent), QColor(hover), foreground);
+    const QString sheet = QStringLiteral(R"(
+        QWidget { color: %1; font-size: %2pt; font-weight: 600; }
         QWidget#SettingsWindow { background: transparent; }
-        QFrame#windowFrame { background: %3; border: 1px solid %4; border-radius: 13px; }
+        QFrame#windowFrame { background: %3; border: 1px solid %4; border-radius: 14px; }
         QWidget#titleBar { background: transparent; }
         QLabel#windowCaption { color: %7; font-size: 10pt; }
         QPushButton#captionButton, QPushButton#windowClose { background: transparent; border: none; border-radius: 5px; padding: 0; }
         QPushButton#captionButton:hover { background: %9; }
         QPushButton#windowClose:hover { background: #C42B1C; }
         QWidget#content, QWidget#page, QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }
-        QFrame#sidebar { background: transparent; border-right: 1px solid %4; }
+        QFrame#sidebar { background: %12; border-right: 1px solid %4; }
         QFrame#footer { background: transparent; border-top: 1px solid %4; }
         QFrame#settingsGroup { background: %5; border: 1px solid %4; border-radius: 10px; }
         QLabel { background: transparent; }
-        QLabel#brand { font-size: 30pt; font-weight: 650; padding-left: 10px; }
-        QLabel#heading { font-size: 24pt; font-weight: 600; }
+        QLabel#brand { font-size: 14pt; font-weight: 750; }
+        QLabel#heading { font-size: 23pt; font-weight: 700; }
         QLabel#groupHeading { font-size: %6pt; font-weight: 600; }
-        QLabel#description { color: %7; }
+        QLabel#description { color: %7; font-weight: 400; }
         QLabel#liveLabel { color: %8; font-size: 9pt; }
-        QListWidget#navigation { background: transparent; border: none; outline: none; }
+        QListWidget#navigation { background: transparent; border: none; outline: none; font-size: 10pt; font-weight: 500; }
         QListWidget#navigation::item { padding: 0 11px; border-radius: 7px; color: %7; }
         QListWidget#navigation::item:hover { background: %9; color: %1; }
-        QListWidget#navigation::item:selected { background: %10; color: %1; border-left: 3px solid %8; }
-        QPushButton { background: %9; border: 1px solid %4; border-radius: 7px; padding: 8px 14px; }
+        QListWidget#navigation::item:selected { background: %10; color: %1; }
+        QListWidget#navigation::item:focus { border: 1px solid %7; }
+        QPushButton { background: %9; border: 1px solid %4; border-radius: 8px; padding: 9px 14px; outline: none; }
+        QPushButton:focus { border-color: %7; }
+        QPushButton#captionButton:focus, QPushButton#windowClose:focus { background: %9; }
         QPushButton:hover { background: %10; border-color: %8; }
         QPushButton:pressed, QPushButton:checked { background: %10; border-color: %8; }
         QPushButton#accentButton { background: %8; color: %11; font-weight: 600; border-color: %8; }
@@ -1061,20 +1089,23 @@ void SettingsWindow::updateStyle()
         QPushButton:disabled { background: transparent; color: %7; border-color: %4; }
         QPushButton#accentButton:disabled { background: %9; color: %7; border-color: %4; }
         QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit, QKeySequenceEdit { background: %3; border: 1px solid %4;
-            border-bottom: 1px solid %7; border-radius: 6px; padding: 7px 10px; min-height: 19px; }
-        QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QLineEdit:focus, QKeySequenceEdit:focus { border-bottom: 2px solid %8; }
+            border-radius: 8px; padding: 9px 12px; min-height: 20px; selection-background-color: %10; }
+        QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QLineEdit:focus, QKeySequenceEdit:focus { border: 1px solid %7; }
         QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled { color: %7; background: transparent; }
-        QSpinBox::up-button, QDoubleSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right;
-            width: 24px; background: %9; border-left: 1px solid %4; border-bottom: 1px solid %4; border-top-right-radius: 5px; }
-        QSpinBox::down-button, QDoubleSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right;
-            width: 24px; background: %9; border-left: 1px solid %4; border-bottom-right-radius: 5px; }
-        QSpinBox::up-button:hover, QSpinBox::down-button:hover, QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover { background: %10; }
+        QComboBox { padding-right: 32px; }
         QComboBox::drop-down { border: none; width: 26px; }
-        QComboBox QAbstractItemView { background: %5; color: %1; selection-background-color: %10; padding: 4px; border: 1px solid %4; }
-        QCheckBox { spacing: 10px; background: transparent; min-height: 25px; }
-        QCheckBox::indicator { width: 18px; height: 18px; background: %3; border: 1px solid %7; border-radius: 5px; }
-        QCheckBox::indicator:checked { background: %8; border: 1px solid %8; image: none; }
-        QCheckBox::indicator:hover { border-color: %8; }
+        QComboBox::down-arrow { image: none; width: 0; height: 0; }
+        QComboBox QAbstractItemView { background: %5; color: %1; selection-background-color: %10;
+            padding: 6px; border: 1px solid %4; outline: none; }
+        QComboBox QAbstractItemView::item { min-height: 30px; padding: 3px 8px; border-radius: 5px; }
+        QKeySequenceEdit QLineEdit { background: transparent; border: none; padding: 0; }
+        QSlider::groove:horizontal { height: 4px; background: %9; border-radius: 2px; }
+        QSlider::sub-page:horizontal { background: %8; border-radius: 2px; }
+        QSlider::handle:horizontal { background: %8; border: 2px solid %5; width: 14px;
+            margin: -7px 0; border-radius: 9px; }
+        QSlider::handle:horizontal:hover, QSlider::handle:horizontal:focus { border-color: %7; }
+        QSlider::handle:horizontal:disabled, QSlider::sub-page:horizontal:disabled { background: %4; }
+        QCheckBox { background: transparent; }
         QScrollBar:vertical { background: transparent; width: 8px; margin: 0; }
         QScrollBar::handle:vertical { background: %4; border-radius: 4px; min-height: 35px; }
         QScrollBar::handle:vertical:hover { background: %7; }
@@ -1083,7 +1114,77 @@ void SettingsWindow::updateStyle()
         QToolTip { color: %1; background: %5; border: 1px solid %4; padding: 7px; }
         QDialog, QMessageBox, QInputDialog, QColorDialog { background: %3; }
     )").arg(foreground.name()).arg(fontSize).arg(panelBackground, border, surface).arg(fontSize + 1)
-        .arg(muted, accent, hover, selected, accentText));
+        .arg(muted, accent, hover, selected, accentText).arg(blended(foreground, background, 0.02));
+    if (styleSheet() != sheet) setStyleSheet(sheet);
+}
+
+SettingsWindow::~SettingsWindow()
+{
+    motion_.stopAll();
+}
+
+void SettingsWindow::refreshHideDelay()
+{
+    const int seconds = store_->config().value("auto_hide_seconds").toInt();
+    const QSignalBlocker choiceBlocker(hideDelayChoice_);
+    const QSignalBlocker valueBlocker(hideDelayValue_);
+    const int preset = hideDelayChoice_->findData(seconds);
+    if (seconds == 0) customHideDelay_ = false;
+    hideDelayChoice_->setCurrentIndex(customHideDelay_ || preset < 0 ? hideDelayChoice_->count() - 1 : preset);
+    hideDelayValue_->setVisible(customHideDelay_ || preset < 0);
+    hideDelayValue_->setValue(seconds > 0 ? seconds : 10);
+}
+
+void SettingsWindow::updateMotion()
+{
+    const auto config = store_->config();
+    const bool enabled = config.value("settings_animations").toBool();
+    const int duration = config.value("settings_animation_duration").toInt();
+    const auto* display = screen();
+    const double refreshRate = display ? display->refreshRate() : 60.0;
+    motion_.setRefreshRate(refreshRate);
+    for (auto* toggle : findChildren<SettingsToggle*>())
+        toggle->setMotion(enabled, duration, refreshRate);
+    if (!enabled) finishPageAnimation();
+}
+
+void SettingsWindow::animatePage()
+{
+    if (!pageOpacity_) return;
+    finishPageAnimation();
+    if (!isVisible() || !store_->config().value("settings_animations").toBool()) return;
+    const auto duration = std::chrono::milliseconds(store_->config().value("settings_animation_duration").toInt());
+    motion_.start("page", 0.15, 1.0, duration, [this](double opacity) {
+        pageOpacity_->setOpacity(opacity);
+    });
+}
+
+void SettingsWindow::finishPageAnimation()
+{
+    motion_.stop("page");
+    if (pageOpacity_) pageOpacity_->setOpacity(1.0);
+}
+
+void SettingsWindow::showEvent(QShowEvent* event)
+{
+    QWidget::showEvent(event);
+    disconnect(screenConnection_);
+    const auto bindScreen = [this](QScreen* display) {
+        disconnect(refreshRateConnection_);
+        if (display)
+            refreshRateConnection_ = connect(display, &QScreen::refreshRateChanged, this, [this] { updateMotion(); });
+        updateMotion();
+    };
+    if (windowHandle())
+        screenConnection_ = connect(windowHandle(), &QWindow::screenChanged, this, bindScreen);
+    bindScreen(screen());
+    animatePage();
+}
+
+void SettingsWindow::hideEvent(QHideEvent* event)
+{
+    finishPageAnimation();
+    QWidget::hideEvent(event);
 }
 
 void SettingsWindow::closeEvent(QCloseEvent* event)
@@ -1097,6 +1198,7 @@ void SettingsWindow::closeEvent(QCloseEvent* event)
 void SettingsWindow::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
+    finishPageAnimation();
     const bool compact = height() < 680;
     if (!navigation_ || compactSidebar_ == compact)
         return;

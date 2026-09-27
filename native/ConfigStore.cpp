@@ -34,6 +34,7 @@ const QSet<QString> ColorFields = {
 const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
     "opacity", "blur", "gradient_enabled", "radius", "font_family", "font_size",
     "icon_size", "progress_height", "settings_font_size", "settings_opacity", "settings_blur",
+    "settings_animations", "settings_animation_duration", "settings_font_family",
     "border_width", "border_opacity", "compact_radius", "compact_opacity",
     "artwork_background", "artwork_background_strength"
 };
@@ -43,6 +44,7 @@ const QMap<QString, QPair<double, double>> NumericRanges = {
     {"progress_height", {1, 20}}, {"icon_size", {10, 48}}, {"font_size", {8, 36}},
     {"spacing", {0, 80}}, {"animation_duration", {0, 3000}}, {"offset_y", {0, 4000}},
     {"auto_hide_seconds", {0, 3600}}, {"settings_font_size", {8, 18}}, {"settings_opacity", {0.3, 1}},
+    {"settings_animation_duration", {80, 600}},
     {"idle_collapse_seconds", {1, 120}}, {"compact_width", {48, 500}}, {"compact_height", {8, 96}},
     {"compact_visible_height", {2, 96}}, {"compact_radius", {0, 48}}, {"compact_opacity", {0.1, 1}},
     {"border_width", {0, 4}}, {"border_opacity", {0, 1}}, {"artwork_background_strength", {0, 1}}
@@ -52,7 +54,8 @@ const QSet<QString> DecimalFields = {
     "artwork_background_strength"
 };
 const QMap<QString, int> StringLimits = {
-    {"font_family", 120}, {"hotkey", 80}, {"monitor", 256}, {"source_id", 512}, {"update_repository", 140}
+    {"font_family", 120}, {"settings_font_family", 120}, {"hotkey", 80}, {"monitor", 256},
+    {"source_id", 512}, {"update_repository", 140}
 };
 
 bool fail(QString* error, const QString& message)
@@ -193,8 +196,9 @@ QJsonObject ConfigStore::defaults()
         {"compact_width", 156}, {"compact_height", 32}, {"compact_visible_height", 8},
         {"compact_radius", 16}, {"compact_opacity", 0.94}, {"compact_background", "#10121B"},
         {"border_width", 0.0}, {"border_opacity", 0.22}, {"border_color", "#9B8CFF"},
-        {"source_id", ""}, {"settings_background", "#0D0F17"}, {"settings_accent", "#9B8CFF"},
-        {"settings_text", "#F5F5FA"}, {"settings_font_size", 10}, {"settings_opacity", 0.94},
+        {"source_id", ""}, {"settings_background", "#0A0A0A"}, {"settings_accent", "#FFFFFF"},
+        {"settings_text", "#D4D4D4"}, {"settings_font_size", 10}, {"settings_opacity", 0.94},
+        {"settings_animations", true}, {"settings_animation_duration", 200}, {"settings_font_family", "Inter"},
         {"settings_blur", true}, {"update_repository", "scarrymany/Island"}, {"check_updates", true}
     };
 }
@@ -226,7 +230,8 @@ bool ConfigStore::validate(QJsonObject& config, QString* error)
             if (!value.isString() || !colorPattern.match(value.toString()).hasMatch())
                 return fail(error, QStringLiteral("%1: цвет должен иметь формат #RRGGBB").arg(key));
         } else if (StringLimits.contains(key)) {
-            if (!value.isString() || !validName(value.toString(), StringLimits.value(key), key != "font_family"))
+            const bool allowEmpty = key != "font_family" && key != "settings_font_family";
+            if (!value.isString() || !validName(value.toString(), StringLimits.value(key), allowEmpty))
                 return fail(error, QStringLiteral("%1: недопустимая строка").arg(key));
             if (key == "update_repository" && !value.toString().isEmpty()
                 && !repositoryPattern.match(value.toString()).hasMatch())
