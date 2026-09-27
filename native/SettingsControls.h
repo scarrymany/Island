@@ -6,11 +6,46 @@
 #include <QColor>
 #include <QComboBox>
 #include <QFontComboBox>
+#include <QListWidget>
 #include <QWidget>
 
 class QDoubleSpinBox;
 class QHideEvent;
 class QSlider;
+class SettingsNavigationDelegate;
+
+class SettingsNavigation final : public QListWidget {
+    Q_OBJECT
+
+public:
+    explicit SettingsNavigation(QWidget* parent = nullptr);
+    void setMotion(bool enabled, int durationMs, double refreshRate);
+    void setColors(const QColor& accent, const QColor& track, const QColor& text);
+
+protected:
+    void currentChanged(const QModelIndex& current, const QModelIndex& previous) override;
+    void paintEvent(QPaintEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
+    void scrollContentsBy(int dx, int dy) override;
+    void hideEvent(QHideEvent* event) override;
+    void focusInEvent(QFocusEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
+
+private:
+    friend class SettingsNavigationDelegate;
+    void movePill(bool animate);
+    void settlePill();
+
+    AnimationClock animation_;
+    QRectF pill_;
+    QRectF target_;
+    QColor accent_{"#F4F4F5"};
+    QColor track_{"#18181B"};
+    QColor text_{"#F4F4F5"};
+    bool motionEnabled_ = true;
+    bool keyboardFocus_ = false;
+    int durationMs_ = 220;
+};
 
 class SettingsSlider final : public QWidget {
     Q_OBJECT

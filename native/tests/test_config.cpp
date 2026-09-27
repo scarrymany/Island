@@ -42,6 +42,7 @@ void invalidValues()
     const QList<QJsonObject> cases = {
         {{"width", true}}, {{"width", "560"}}, {{"width", 0}}, {{"width", 2000000}},
         {{"width", 600.5}}, {{"opacity", QJsonValue(std::numeric_limits<double>::quiet_NaN())}},
+        {{"font_weight", 99}}, {{"font_weight", 901}}, {{"font_weight", 650.5}}, {{"font_weight", "700"}},
         {{"scale", QJsonValue(std::numeric_limits<double>::infinity())}},
         {{"background", "#12345"}}, {{"background", "red; color: transparent"}},
         {{"layout", "invalid"}}, {{"startup", 1}}, {{"unknown", 1}},
@@ -249,7 +250,8 @@ void settingsAppearanceConfiguration(const QString& directory)
     const auto defaults = ConfigStore::defaults();
     for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
         check(defaults.value(field.key()) == field.value(), qPrintable("settings appearance default: " + field.key()));
-    check(defaults.value("font_family").toString() == "Segoe UI", "settings font does not change the HUD default font");
+    check(defaults.value("font_family").toString() == "Inter", "HUD uses the bundled Inter font");
+    check(defaults.value("font_weight").toInt() == 600, "HUD uses semibold text by default");
     check(ConfigStore::numericRange("settings_animation_duration") == qMakePair(80.0, 600.0), "settings animation duration control range");
     for (int duration : {80, 600}) {
         QJsonObject config{{"settings_animation_duration", duration}};

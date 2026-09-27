@@ -32,7 +32,7 @@ const QSet<QString> ColorFields = {
     "border_color", "compact_background"
 };
 const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
-    "opacity", "blur", "gradient_enabled", "radius", "font_family", "font_size",
+    "opacity", "blur", "gradient_enabled", "radius", "font_family", "font_size", "font_weight",
     "icon_size", "progress_height", "settings_font_size", "settings_opacity", "settings_blur",
     "settings_animations", "settings_animation_duration", "settings_font_family",
     "border_width", "border_opacity", "compact_radius", "compact_opacity",
@@ -41,7 +41,7 @@ const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
 const QMap<QString, QPair<double, double>> NumericRanges = {
     {"width", {260, 2000}}, {"height", {64, 600}}, {"scale", {0.5, 2.5}},
     {"cover_size", {24, 240}}, {"radius", {0, 160}}, {"opacity", {0.1, 1}},
-    {"progress_height", {1, 20}}, {"icon_size", {10, 48}}, {"font_size", {8, 36}},
+    {"progress_height", {1, 20}}, {"icon_size", {10, 48}}, {"font_size", {8, 36}}, {"font_weight", {100, 900}},
     {"spacing", {0, 80}}, {"animation_duration", {0, 3000}}, {"offset_y", {0, 4000}},
     {"auto_hide_seconds", {0, 3600}}, {"settings_font_size", {8, 18}}, {"settings_opacity", {0.3, 1}},
     {"settings_animation_duration", {80, 600}},
@@ -187,7 +187,7 @@ QJsonObject ConfigStore::defaults()
         {"artwork_background", true}, {"artwork_background_strength", 0.75},
         {"gradient_color", "#242344"}, {"text_color", "#F5F5FA"}, {"secondary_color", "#9394AB"},
         {"accent_color", "#9B8CFF"}, {"progress_color", "#9B8CFF"}, {"progress_height", 3},
-        {"icon_color", "#F5F5FA"}, {"icon_size", 18}, {"font_family", "Segoe UI"}, {"font_size", 13},
+        {"icon_color", "#F5F5FA"}, {"icon_size", 18}, {"font_family", "Inter"}, {"font_size", 14}, {"font_weight", 600},
         {"spacing", 16}, {"layout", "island"}, {"visible", visible}, {"element_positions", QJsonObject{}},
         {"animations", animations}, {"animation_duration", 260}, {"monitor", ""},
         {"monitor_positions", QJsonObject{}}, {"anchor", "top_center"}, {"offset_y", 12},

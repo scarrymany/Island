@@ -1,4 +1,5 @@
 #include "HudWindow.h"
+#include "AppAssets.h"
 #include "Layout.h"
 #include "WindowsIntegration.h"
 
@@ -147,6 +148,7 @@ void icon(QPainter& p, const QString& name, const QRectF& rect, const QColor& co
 HudWindow::HudWindow(const QJsonObject& config)
     : QWidget(nullptr, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool | Qt::WindowDoesNotAcceptFocus),
       config_(config) {
+    AppAssets::settingsFontFamily();
     setWindowTitle("SCARP ISLAND");
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating);
@@ -183,6 +185,7 @@ void HudWindow::watchScreen(QScreen* screen) {
 }
 
 bool HudWindow::event(QEvent* event) {
+    if (event->type() == QEvent::WindowBlocked || event->type() == QEvent::WindowDeactivate) cancelSeek();
     const bool handled = QWidget::event(event);
     if (event->type() == QEvent::Move || event->type() == QEvent::DevicePixelRatioChange) syncRefreshRate();
     return handled;
@@ -227,7 +230,12 @@ void HudWindow::placeOnScreen() {
 }
 
 void HudWindow::applyConfig(const QJsonObject& config) {
+    cancelSeek();
     config_ = config;
+    QFont font(config_["font_family"].toString("Inter"));
+    font.setPixelSize(config_["font_size"].toInt(14));
+    font.setWeight(static_cast<QFont::Weight>(std::clamp(config_["font_weight"].toInt(600), 100, 900)));
+    setFont(font);
     if (!config_["idle_collapse"].toBool(true) || editing_) collapsed_ = false;
     placeOnScreen();
     if (isVisible()) applyNative();
@@ -250,6 +258,7 @@ void HudWindow::setCollapsed(bool collapsed) {
     if (collapsed && (editing_ || menuOpen_ || manualHidden_ || !isVisible()
         || !config_["idle_collapse"].toBool(true))) return;
     if (collapsed_ == collapsed && dockProgress_ == (collapsed ? 1.0 : 0.0)) return;
+    cancelSeek();
     collapsed_ = collapsed;
     if (collapsed) hoverFromDock_ = false;
     hover_.clear();
@@ -316,6 +325,7 @@ void HudWindow::showEvent(QShowEvent* e) {
     syncRefreshRate(); applyNative(); syncFrameTimer();
 }
 void HudWindow::hideEvent(QHideEvent* e) {
+    cancelSeek();
     frameTimer_.stop(); hideTimer_.stop();
     animations_.stopAll();
     coverAlpha_ = titleAlpha_ = playAlpha_ = hoverAlpha_ = 1;
@@ -368,6 +378,7 @@ void HudWindow::reveal(bool manual) {
     restartHideTimer();
 }
 void HudWindow::conceal(bool manual) {
+    cancelSeek();
     if (manual) manualHidden_ = true;
     hideTimer_.stop(); stopAnimation("appear"); stopAnimation("dock");
     if (isVisible()) {
@@ -398,6 +409,7 @@ void HudWindow::syncFrameTimer() {
     } else frameTimer_.stop();
 }
 void HudWindow::setEditing(bool enabled) {
+    if (editing_ != enabled) cancelSeek();
     if (editing_ != enabled) { dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); }
     editing_ = enabled;
     if (enabled) reveal(true);
@@ -419,6 +431,8 @@ void HudWindow::setVolumeAvailable(bool available) {
 void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
     const bool changed = snapshot.sourceId != snapshot_.sourceId || snapshot.title != snapshot_.title
         || snapshot.artist != snapshot_.artist || snapshot.album != snapshot_.album;
+    if (changed || !snapshot.active || !snapshot.canSeek || !std::isfinite(snapshot.duration)
+        || snapshot.duration <= 0 || snapshot.duration != snapshot_.duration) cancelSeek();
     if (snapshot.cover != snapshot_.cover) {
         oldCover_ = cover_; cover_ = QPixmap();
         if (!snapshot.cover.isEmpty()) cover_.loadFromData(snapshot.cover);
@@ -509,9 +523,9 @@ void HudWindow::paintEvent(QPaintEvent*) {
 void HudWindow::paintElement(QPainter& p, const QString& name, QRectF rect) {
     p.save();
     p.setClipRect(rect.adjusted(-1, -1, 1, 1), Qt::IntersectClip);
-    QFont font(config_["font_family"].toString("Segoe UI"));
-    const int fontSize = config_["font_size"].toInt(13);
-    font.setPixelSize(fontSize); p.setFont(font);
+    QFont font(this->font());
+    const int fontSize = font.pixelSize();
+    p.setFont(font);
     p.setPen(ink(config_["text_color"].toString()));
     const auto secondary = config_["secondary_color"].toString();
     if (name == "cover") {
@@ -521,7 +535,8 @@ void HudWindow::paintElement(QPainter& p, const QString& name, QRectF rect) {
         QString text;
         if (name == "title") {
             text = snapshot_.title.isEmpty() ? (snapshot_.active ? QStringLiteral("Без названия") : QStringLiteral("Музыка рядом")) : snapshot_.title;
-            font.setWeight(QFont::DemiBold); p.setOpacity(p.opacity() * titleAlpha_);
+            font.setWeight(static_cast<QFont::Weight>(std::min(900, std::max(700, font.weight() + 100))));
+            p.setOpacity(p.opacity() * titleAlpha_);
         } else {
             font.setPixelSize(std::max(8, fontSize - (name == "source" ? 3 : 1)));
             p.setPen(ink(secondary));
@@ -552,14 +567,14 @@ void HudWindow::paintElement(QPainter& p, const QString& name, QRectF rect) {
         QRectF bar(rect.x(), rect.center().y() - thickness / 2, rect.width(), thickness);
         p.setPen(Qt::NoPen); p.setBrush(ink(secondary, .22));
         p.drawRoundedRect(bar, thickness / 2, thickness / 2);
-        const double fraction = snapshot_.duration > 0 ? snapshot_.estimatedPosition() / snapshot_.duration : 0;
+        const double fraction = snapshot_.duration > 0 ? displayedPosition() / snapshot_.duration : 0;
         bar.setWidth(bar.width() * std::clamp(fraction, 0.0, 1.0));
         p.setBrush(ink(config_["progress_color"].toString()));
         p.drawRoundedRect(bar, thickness / 2, thickness / 2);
-        if (name == hover_ && snapshot_.canSeek) p.drawEllipse(QPointF(bar.right(), bar.center().y()), 3, 3);
+        if ((name == hover_ || seekPreview_) && snapshot_.canSeek) p.drawEllipse(QPointF(bar.right(), bar.center().y()), 3, 3);
     } else if (name == "time") {
         font.setPixelSize(std::max(9, fontSize - 3)); p.setFont(font); p.setPen(ink(secondary));
-        p.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, Layout::formatTime(snapshot_.estimatedPosition()));
+        p.drawText(rect, Qt::AlignLeft | Qt::AlignVCenter, Layout::formatTime(displayedPosition()));
         p.drawText(rect, Qt::AlignRight | Qt::AlignVCenter, snapshot_.duration > 0 ? Layout::formatTime(snapshot_.duration) : "--:--");
     } else if (name == "volume") {
         if (!volumeAvailable_) p.setOpacity(p.opacity() * 0.35);
@@ -607,16 +622,22 @@ QString HudWindow::hitTest(const QPointF& point) const {
 }
 void HudWindow::mousePressEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton) return;
+    cancelSeek();
     if (collapsed_ || dockProgress_ > 0) { reveal(); return; }
     hideTimer_.stop();
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     moved_ = false;
     if (editing_ && !hit.isEmpty()) { dragElement_ = hit; dragOrigin_ = point - elementRects()[hit].topLeft(); }
     else if (hit == "volume" && !volumeAvailable_) dragElement_.clear();
+    else if (hit == "progress") {
+        dragElement_.clear();
+        if (seekEnabled()) { dragElement_ = hit; previewSeekAt(point); }
+    }
     else if (!Transport.contains(hit) && hit != "progress" && hit != "volume") dragWindow_ = e->globalPosition().toPoint() - pos();
     else dragElement_ = hit;
 }
 void HudWindow::mouseMoveEvent(QMouseEvent* e) {
+    if (seekPreview_ && !e->buttons().testFlag(Qt::LeftButton)) cancelSeek();
     if (dockProgress_ > 0) return;
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     if (hover_ != hit) {
@@ -643,6 +664,7 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
         updateNativeRegion();
         moved_ = true;
     }
+    else if (seekPreview_) previewSeekAt(point);
     else if (dragElement_ == "volume") volumeAt(point);
 }
 void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
@@ -656,16 +678,39 @@ void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
                                                std::clamp(y() - area.y(), 0, std::max(0, area.height() - height()))};
         config_["monitor_positions"] = positions; config_["monitor"] = target->name(); config_["anchor"] = "free";
         placeOnScreen(); emit configChanged(config_);
+    } else if (seekPreview_) {
+        previewSeekAt(point);
+        const auto target = seekPreview_;
+        cancelSeek();
+        if (target) emit command("seek", *target);
     } else if (!editing_ && hit == dragElement_) {
         if (Transport.contains(hit) && snapshot_.active) {
             const bool enabled = hit == "play" ? snapshot_.canPlayPause : hit == "next" ? snapshot_.canNext : snapshot_.canPrevious;
             if (enabled) emit command(hit == "play" ? "play_pause" : hit, 0);
-        } else if (hit == "progress" && snapshot_.canSeek && snapshot_.duration > 0) {
-            const auto rect = elementRects()[hit];
-            emit command("seek", std::clamp((point.x() - rect.x()) / rect.width(), 0.0, 1.0) * snapshot_.duration);
         } else if (hit == "volume") volumeAt(point);
     }
     dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); restartHideTimer();
+}
+bool HudWindow::seekEnabled() const {
+    return !editing_ && !fadingOut_ && !collapsed_ && dockProgress_ == 0 && isVisible()
+        && snapshot_.active && snapshot_.canSeek && std::isfinite(snapshot_.duration) && snapshot_.duration > 0
+        && elementRects().value("progress").isValid();
+}
+void HudWindow::previewSeekAt(const QPointF& point) {
+    if (!seekEnabled()) { cancelSeek(); return; }
+    const auto rect = elementRects().value("progress");
+    seekPreview_ = std::clamp((point.x() - rect.left()) / rect.width(), 0.0, 1.0) * snapshot_.duration;
+    update();
+}
+void HudWindow::cancelSeek() {
+    if (!seekPreview_) return;
+    seekPreview_.reset();
+    if (dragElement_ == "progress") dragElement_.clear();
+    restartHideTimer();
+    update();
+}
+double HudWindow::displayedPosition() const {
+    return seekPreview_ ? *seekPreview_ : snapshot_.estimatedPosition();
 }
 void HudWindow::volumeAt(const QPointF& point) {
     if (!volumeAvailable_) return;
@@ -679,6 +724,7 @@ void HudWindow::wheelEvent(QWheelEvent* e) {
     }
 }
 void HudWindow::contextMenuEvent(QContextMenuEvent* e) {
+    cancelSeek();
     menuOpen_ = true;
     hideTimer_.stop();
     QMenu menu(this);

@@ -6,6 +6,8 @@
 #include <QEnterEvent>
 #include <QBuffer>
 #include <QPainter>
+#include <QFontDatabase>
+#include <QFontInfo>
 #include <QListWidget>
 #include <QScreen>
 #include <QTemporaryDir>
@@ -22,7 +24,15 @@ private:
         return result;
     }
     static QPoint point(HudWindow& hud, const QString& name) {
-        return hud.elementRects()[name].center().toPoint() + QPoint(14, 14);
+        const double scale = hud.config()["scale"].toDouble(1);
+        const int inset = qCeil(14 * scale);
+        return (hud.elementRects()[name].center() * scale + QPointF(inset, inset)).toPoint();
+    }
+    static QRect pixelRect(HudWindow& hud, const QString& name) {
+        const double scale = hud.config()["scale"].toDouble(1);
+        const int inset = qCeil(14 * scale);
+        const auto rect = hud.elementRects().value(name);
+        return QRectF(rect.topLeft() * scale + QPointF(inset, inset), rect.size() * scale).toAlignedRect();
     }
     static QByteArray artwork(const QColor& left, const QColor& right = {}) {
         QImage image(100, 100, QImage::Format_RGB32);
@@ -53,6 +63,131 @@ private:
         return hud.grab().toImage().pixelColor(hud.width() / 2, hud.height() / 2);
     }
 private slots:
+    void hudUsesBundledFontAndConfiguredWeight() {
+        auto c = config();
+        c["font_family"] = "Inter"; c["font_size"] = 14; c["font_weight"] = 600;
+        HudWindow hud(c);
+        QVERIFY(QFontDatabase::families().contains("Inter"));
+        QCOMPARE(QFontInfo(hud.font()).family(), QString("Inter"));
+        QCOMPARE(hud.font().pixelSize(), 14);
+        QCOMPARE(hud.font().weight(), QFont::DemiBold);
+        c["font_weight"] = 800; hud.applyConfig(c);
+        QCOMPARE(hud.font().weight(), QFont::ExtraBold);
+    }
+    void scrubbingPreviewsProgressAndTimeWithoutSendingUntilRelease() {
+        auto c = config();
+        c["idle_collapse"] = false; c["artwork_background"] = false;
+        c["gradient_enabled"] = false; c["background"] = "#000000"; c["opacity"] = 1;
+        c["progress_color"] = "#FFFFFF"; c["secondary_color"] = "#FFFFFF";
+        HudWindow hud(c);
+        MediaSnapshot media;
+        media.active = true; media.canSeek = true; media.duration = 200; media.position = 20;
+        media.sourceId = "Player"; media.title = "Track";
+        hud.setSnapshot(media); hud.reveal();
+        const QRect progress = pixelRect(hud, "progress");
+        const QPoint start(progress.left() + progress.width() / 4, progress.center().y());
+        const QPoint finish(progress.left() + progress.width() * 3 / 4, progress.center().y());
+        const double target = (finish.x() - 14 - hud.elementRects()["progress"].left())
+            / hud.elementRects()["progress"].width() * media.duration;
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(&hud, finish);
+        QCOMPARE(commands.size(), 0);
+        const auto dragging = hud.grab().toImage();
+        QVERIFY(dragging.pixelColor((QPointF(progress.center()) * dragging.devicePixelRatio()).toPoint()).red() > 220);
+        const auto draggingTime = hud.grab(pixelRect(hud, "time")).toImage();
+        HudWindow reference(c);
+        auto expected = media; expected.position = target;
+        reference.setSnapshot(expected); reference.reveal();
+        QCOMPARE(draggingTime, reference.grab(pixelRect(reference, "time")).toImage());
+        media.position = 35; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), draggingTime);
+        QCOMPARE(commands.size(), 0);
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, finish);
+        QCOMPARE(commands.size(), 1);
+        QCOMPARE(commands.first().first().toString(), QString("seek"));
+        QVERIFY(qAbs(commands.first().at(1).toDouble() - target) < 0.001);
+    }
+    void scrubReleaseOutsideClampsToTrackBounds_data() {
+        QTest::addColumn<bool>("pastEnd");
+        QTest::addColumn<double>("scale");
+        QTest::newRow("before-start") << false << 1.0;
+        QTest::newRow("past-end") << true << 1.0;
+        QTest::newRow("scaled-before-start") << false << 1.75;
+        QTest::newRow("scaled-past-end") << true << 1.75;
+    }
+    void scrubReleaseOutsideClampsToTrackBounds() {
+        QFETCH(bool, pastEnd);
+        QFETCH(double, scale);
+        auto c = config(); c["scale"] = scale;
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        hud.setSnapshot(media); hud.reveal();
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        const QPoint outside(pastEnd ? hud.width() + 50 : -50, -20);
+        QTest::mouseMove(&hud, outside);
+        QCOMPARE(commands.size(), 0);
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, outside);
+        QCOMPARE(commands.size(), 1);
+        QCOMPARE(commands.first().at(1).toDouble(), pastEnd ? media.duration : 0.0);
+    }
+    void interruptedScrubCannotResumeOnAnotherTrack_data() {
+        QTest::addColumn<QString>("interruption");
+        for (const auto* reason : {"track", "source", "inactive", "disabled", "duration", "hide", "fade", "editing", "layout", "capture", "blocked"})
+            QTest::newRow(reason) << QString::fromLatin1(reason);
+    }
+    void interruptedScrubCannotResumeOnAnotherTrack() {
+        QFETCH(QString, interruption);
+        auto c = config();
+        if (interruption == "fade") {
+            auto animations = c["animations"].toObject(); animations["disappear"] = true;
+            c["animations"] = animations; c["animation_duration"] = 600;
+        }
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        media.sourceId = "Player"; media.title = "First";
+        hud.setSnapshot(media); hud.reveal();
+        const QPoint position = point(hud, "progress");
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        if (interruption == "hide") { hud.hide(); hud.reveal(true); }
+        else if (interruption == "fade") { hud.conceal(true); hud.reveal(true); }
+        else if (interruption == "editing") { hud.setEditing(true); hud.setEditing(false); }
+        else if (interruption == "layout") {
+            auto visible = c["visible"].toObject(); visible["progress"] = false; c["visible"] = visible; hud.applyConfig(c);
+            visible["progress"] = true; c["visible"] = visible; hud.applyConfig(c);
+        } else if (interruption == "capture") {
+            QMouseEvent lost(QEvent::MouseMove, position, hud.mapToGlobal(position), Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&hud, &lost);
+        } else if (interruption == "blocked") {
+            QEvent blocked(QEvent::WindowBlocked); QApplication::sendEvent(&hud, &blocked);
+            QEvent unblocked(QEvent::WindowUnblocked); QApplication::sendEvent(&hud, &unblocked);
+        } else {
+            auto changed = media;
+            if (interruption == "track") changed.title = "Second";
+            if (interruption == "source") changed.sourceId = "Other Player";
+            if (interruption == "inactive") changed.active = false;
+            if (interruption == "disabled") changed.canSeek = false;
+            if (interruption == "duration") changed.duration = 0;
+            hud.setSnapshot(changed);
+            hud.setSnapshot(media);
+        }
+        QTest::mouseMove(&hud, position + QPoint(20, 0));
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, position + QPoint(20, 0));
+        QCOMPARE(commands.size(), 0);
+    }
+    void initiallyDisabledSeekCannotStartMidGesture() {
+        HudWindow hud(config());
+        MediaSnapshot media; media.active = true; media.duration = 200;
+        hud.setSnapshot(media); hud.reveal();
+        QSignalSpy commands(&hud, &HudWindow::command);
+        const QPoint position = point(hud, "progress");
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        media.canSeek = true; hud.setSnapshot(media);
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, position);
+        QCOMPARE(commands.size(), 0);
+    }
     void changingSourceCancelsThePreviousVolumeGesture() {
         HudWindow hud(config());
         hud.reveal();

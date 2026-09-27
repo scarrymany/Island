@@ -8,6 +8,8 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QColorDialog>
+#include <QCursor>
+#include <QFocusEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -43,6 +45,46 @@
 #include <algorithm>
 
 namespace {
+class CaptionButton final : public QPushButton {
+public:
+    CaptionButton() { setFocusPolicy(Qt::TabFocus); }
+
+protected:
+    bool event(QEvent* event) override {
+        const bool result = QPushButton::event(event);
+        if (event->type() == QEvent::Enter || event->type() == QEvent::Leave
+            || event->type() == QEvent::WindowActivate || event->type() == QEvent::WindowDeactivate)
+            update();
+        return result;
+    }
+
+    void focusInEvent(QFocusEvent* event) override {
+        keyboardFocus_ = event->reason() == Qt::TabFocusReason || event->reason() == Qt::BacktabFocusReason
+            || event->reason() == Qt::ShortcutFocusReason;
+        QPushButton::focusInEvent(event);
+    }
+
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const bool hovered = window()->isActiveWindow() && underMouse()
+            && rect().contains(mapFromGlobal(QCursor::pos()));
+        if (hovered || isDown() || (hasFocus() && keyboardFocus_)) {
+            QColor color = palette().color(QPalette::WindowText);
+            color.setAlphaF(isDown() ? 0.14 : 0.08);
+            if (hovered && objectName() == "windowClose") color = QColor("#C42B1C");
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(color);
+            painter.drawRoundedRect(rect(), 5, 5);
+        }
+        icon().paint(&painter, QRect(QPoint((width() - iconSize().width()) / 2,
+            (height() - iconSize().height()) / 2), iconSize()));
+    }
+
+private:
+    bool keyboardFocus_ = false;
+};
+
 const QList<QPair<QString, QString>> ElementNames = {
     {"cover", QStringLiteral("Обложка")}, {"title", QStringLiteral("Название трека")},
     {"artist", QStringLiteral("Исполнитель")}, {"album", QStringLiteral("Альбом")},
@@ -141,6 +183,7 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     shell->setSpacing(0);
     titleBar_ = new QWidget;
     titleBar_->setObjectName("titleBar");
+    titleBar_->setAttribute(Qt::WA_StyledBackground);
     titleBar_->setFixedHeight(42);
     titleBar_->installEventFilter(this);
     auto* titleLayout = new QHBoxLayout(titleBar_);
@@ -150,9 +193,9 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     caption->setObjectName("windowCaption");
     caption->setAttribute(Qt::WA_TransparentForMouseEvents);
     titleLayout->addWidget(caption, 1);
-    auto* minimize = new QPushButton;
-    auto* maximize = new QPushButton;
-    auto* close = new QPushButton;
+    auto* minimize = new CaptionButton;
+    auto* maximize = new CaptionButton;
+    auto* close = new CaptionButton;
     const QList<QPair<QPushButton*, char16_t>> titleButtons = {{minimize, u'\uE921'}, {maximize, u'\uE922'}, {close, u'\uE8BB'}};
     for (const auto& button : titleButtons) {
         button.first->setObjectName("captionButton");
@@ -205,7 +248,7 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     sidebarLayout_->addWidget(sidebarSubtitle_);
     sidebarSpacer_ = new QSpacerItem(0, 28, QSizePolicy::Minimum, QSizePolicy::Fixed);
     sidebarLayout_->addItem(sidebarSpacer_);
-    navigation_ = new QListWidget;
+    navigation_ = new SettingsNavigation;
     navigation_->setObjectName("navigation");
     navigation_->setFrameShape(QFrame::NoFrame);
     navigation_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -388,7 +431,8 @@ QComboBox* SettingsWindow::addChoice(QFormLayout* form, const QString& label, co
     controls_.insert(key, combo);
     connect(combo, &QComboBox::currentIndexChanged, this, [this, key, combo](int index) {
         if (index >= 0)
-            put(key, combo->itemData(index).toString());
+            put(key, key == "font_weight" ? QJsonValue(combo->itemData(index).toInt())
+                                          : QJsonValue(combo->itemData(index).toString()));
     });
     form->addRow(label, combo);
     return combo;
@@ -443,6 +487,11 @@ void SettingsWindow::buildAppearance()
     connect(fonts, &QFontComboBox::currentFontChanged, this, [this](const QFont& font) { put("font_family", font.family()); });
     text->addRow(QStringLiteral("Шрифт"), fonts);
     addNumber(text, QStringLiteral("Размер текста"), "font_size", " px");
+    addChoice(text, QStringLiteral("Насыщенность шрифта"), "font_weight", {
+        {"400", QStringLiteral("Обычный")}, {"500", QStringLiteral("Средний")},
+        {"600", QStringLiteral("Полужирный")}, {"700", QStringLiteral("Жирный")},
+        {"800", QStringLiteral("Очень жирный")}, {"900", QStringLiteral("Максимальный")}
+    });
     addColor(text, QStringLiteral("Основной текст"), "text_color");
     addColor(text, QStringLiteral("Вторичный текст"), "secondary_color");
     addColor(text, QStringLiteral("Иконки"), "icon_color");
@@ -861,8 +910,12 @@ void SettingsWindow::refresh()
             integer->setValue(value.toInt());
         else if (auto* font = qobject_cast<QFontComboBox*>(widget))
             font->setCurrentFont(QFont(value.toString()));
-        else if (auto* combo = qobject_cast<QComboBox*>(widget))
-            combo->setCurrentIndex(combo->findData(value.toString()));
+        else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
+            const QString selected = value.isDouble() ? QString::number(value.toInt()) : value.toString();
+            if (it.key() == "font_weight" && combo->findData(selected) < 0)
+                combo->addItem(QStringLiteral("Своя (%1)").arg(selected), selected);
+            combo->setCurrentIndex(combo->findData(selected));
+        }
         else if (auto* hotkey = qobject_cast<QKeySequenceEdit*>(widget))
             hotkey->setKeySequence(QKeySequence::fromString(value.toString(), QKeySequence::PortableText));
         else if (auto* line = qobject_cast<QLineEdit*>(widget))
@@ -1055,15 +1108,14 @@ void SettingsWindow::updateStyle()
         choice->setColors(QColor(accent), QColor(hover), foreground);
     for (auto* choice : findChildren<SettingsFontChoice*>())
         choice->setColors(QColor(accent), QColor(hover), foreground);
+    qobject_cast<SettingsNavigation*>(navigation_)->setColors(QColor(accent), QColor(selected), foreground);
     const QString sheet = QStringLiteral(R"(
         QWidget { color: %1; font-size: %2pt; font-weight: 600; }
         QWidget#SettingsWindow { background: transparent; }
         QFrame#windowFrame { background: %3; border: 1px solid %4; border-radius: 14px; }
-        QWidget#titleBar { background: transparent; }
+        QWidget#titleBar { background: transparent; border-bottom: 1px solid %4; }
         QLabel#windowCaption { color: %7; font-size: 10pt; }
         QPushButton#captionButton, QPushButton#windowClose { background: transparent; border: none; border-radius: 5px; padding: 0; }
-        QPushButton#captionButton:hover { background: %9; }
-        QPushButton#windowClose:hover { background: #C42B1C; }
         QWidget#content, QWidget#page, QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }
         QFrame#sidebar { background: %12; border-right: 1px solid %4; }
         QFrame#footer { background: transparent; border-top: 1px solid %4; }
@@ -1075,13 +1127,8 @@ void SettingsWindow::updateStyle()
         QLabel#description { color: %7; font-weight: 400; }
         QLabel#liveLabel { color: %8; font-size: 9pt; }
         QListWidget#navigation { background: transparent; border: none; outline: none; font-size: 10pt; font-weight: 500; }
-        QListWidget#navigation::item { padding: 0 11px; border-radius: 7px; color: %7; }
-        QListWidget#navigation::item:hover { background: %9; color: %1; }
-        QListWidget#navigation::item:selected { background: %10; color: %1; }
-        QListWidget#navigation::item:focus { border: 1px solid %7; }
         QPushButton { background: %9; border: 1px solid %4; border-radius: 8px; padding: 9px 14px; outline: none; }
         QPushButton:focus { border-color: %7; }
-        QPushButton#captionButton:focus, QPushButton#windowClose:focus { background: %9; }
         QPushButton:hover { background: %10; border-color: %8; }
         QPushButton:pressed, QPushButton:checked { background: %10; border-color: %8; }
         QPushButton#accentButton { background: %8; color: %11; font-weight: 600; border-color: %8; }
@@ -1145,6 +1192,7 @@ void SettingsWindow::updateMotion()
     motion_.setRefreshRate(refreshRate);
     for (auto* toggle : findChildren<SettingsToggle*>())
         toggle->setMotion(enabled, duration, refreshRate);
+    qobject_cast<SettingsNavigation*>(navigation_)->setMotion(enabled, duration, refreshRate);
     if (!enabled) finishPageAnimation();
 }
 

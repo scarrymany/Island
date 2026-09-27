@@ -1,18 +1,140 @@
+#include "AppAssets.h"
 #include "SettingsControls.h"
 
 #include <QAccessible>
 #include <QDoubleSpinBox>
 #include <QFontDatabase>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QtTest>
 
 #include <limits>
 
+namespace {
+void prepareNavigation(SettingsNavigation& navigation)
+{
+    navigation.resize(220, 220);
+    navigation.setStyleSheet("QListWidget { background: #101010; border: none; }");
+    navigation.setColors(QColor("#FFFFFF"), QColor("#A02020"), QColor("#FFFFFF"));
+    for (int row = 0; row < 6; ++row) {
+        auto* item = new QListWidgetItem(QString::number(row), &navigation);
+        item->setSizeHint(QSize(180, 40));
+    }
+    navigation.setCurrentRow(0);
+    navigation.show();
+    navigation.clearFocus();
+    QCoreApplication::processEvents();
+}
+
+int navigationPillCenter(SettingsNavigation& navigation)
+{
+    const QImage image = navigation.viewport()->grab().toImage();
+    const int x = qRound((navigation.visualItemRect(navigation.currentItem()).left() + 6) * image.devicePixelRatio());
+    int first = -1;
+    int last = -1;
+    for (int y = 0; y < image.height(); ++y) {
+        const QColor color = image.pixelColor(x, y);
+        if (color.red() > color.green() + 15) {
+            if (first < 0) first = y;
+            last = y;
+        }
+    }
+    return first < 0 ? -1 : qRound((first + last) / (2 * image.devicePixelRatio()));
+}
+}
+
 class SettingsControlsTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void initTestCase()
+    {
+        QApplication::setFont(QFont(AppAssets::settingsFontFamily()));
+    }
+
+    void navigationUsesProvidedFillAndAccent()
+    {
+        SettingsNavigation navigation;
+        prepareNavigation(navigation);
+        navigation.setColors(QColor("#89B4FA"), QColor("#1A1A1A"), QColor("#F4F4F5"));
+        navigation.setIconSize(QSize(16, 16));
+        QPixmap icon(16, 16);
+        icon.fill(Qt::white);
+        navigation.currentItem()->setIcon(QIcon(icon));
+        const QImage image = navigation.viewport()->grab().toImage();
+        const QRect row = navigation.visualItemRect(navigation.currentItem());
+        const auto pixel = [&image](int x, int y) {
+            return image.pixelColor(qRound(x * image.devicePixelRatio()), qRound(y * image.devicePixelRatio()));
+        };
+        QCOMPARE(pixel(row.left() + 6, row.center().y()), QColor("#1A1A1A"));
+        QCOMPARE(pixel(row.left() + 19, row.center().y()), QColor("#89B4FA"));
+    }
+
+    void navigationPillGlidesAndReversesWithoutChangingSelection()
+    {
+        SettingsNavigation navigation;
+        prepareNavigation(navigation);
+        navigation.setMotion(true, 220, 144);
+        const int initial = navigationPillCenter(navigation);
+        QVERIFY(initial >= 0);
+        QSignalSpy changed(&navigation, &QListWidget::currentRowChanged);
+        navigation.setCurrentRow(3);
+        QCOMPARE(navigationPillCenter(navigation), initial);
+        QTest::qWait(45);
+        const int middle = navigationPillCenter(navigation);
+        QVERIFY(middle > initial);
+        QVERIFY(middle < navigation.visualItemRect(navigation.currentItem()).center().y());
+        navigation.setCurrentRow(0);
+        QCOMPARE(navigationPillCenter(navigation), middle);
+        QTest::qWait(260);
+        QCOMPARE(navigationPillCenter(navigation), initial);
+        QCOMPARE(changed.size(), 2);
+        QCOMPARE(navigation.currentRow(), 0);
+    }
+
+    void navigationSettlesForReducedMotionResizeScrollAndHide()
+    {
+        SettingsNavigation navigation;
+        prepareNavigation(navigation);
+        navigation.setMotion(true, 300, 144);
+        navigation.setCurrentRow(2);
+        navigation.setMotion(false, 300, 144);
+        QVERIFY(qAbs(navigationPillCenter(navigation) - navigation.visualItemRect(navigation.currentItem()).center().y()) <= 1);
+        navigation.setMotion(true, 300, 144);
+        navigation.setCurrentRow(3);
+        navigation.resize(230, 210);
+        QVERIFY(qAbs(navigationPillCenter(navigation) - navigation.visualItemRect(navigation.currentItem()).center().y()) <= 1);
+        const int scrollBefore = navigation.verticalScrollBar()->value();
+        navigation.setCurrentRow(5);
+        navigation.scrollToItem(navigation.currentItem(), QAbstractItemView::PositionAtBottom);
+        QVERIFY(navigation.verticalScrollBar()->value() > scrollBefore);
+        QVERIFY(qAbs(navigationPillCenter(navigation) - navigation.visualItemRect(navigation.currentItem()).center().y()) <= 1);
+        navigation.setCurrentRow(3);
+        navigation.hide();
+        navigation.show();
+        navigation.clearFocus();
+        QVERIFY(qAbs(navigationPillCenter(navigation) - navigation.visualItemRect(navigation.currentItem()).center().y()) <= 1);
+    }
+
+    void navigationRetainsKeyboardAndAccessibleItems()
+    {
+        SettingsNavigation navigation;
+        prepareNavigation(navigation);
+        navigation.setMotion(false, 200, 60);
+        navigation.setFocus(Qt::TabFocusReason);
+        QSignalSpy changed(&navigation, &QListWidget::currentRowChanged);
+        QTest::keyClick(&navigation, Qt::Key_Down);
+        QCOMPARE(navigation.currentRow(), 1);
+        QCOMPARE(changed.size(), 1);
+        auto* accessible = QAccessible::queryAccessibleInterface(&navigation);
+        QVERIFY(accessible);
+        QCOMPARE(accessible->role(), QAccessible::List);
+        QVERIFY(accessible->childCount() >= navigation.count());
+        navigation.clear();
+        QCOMPARE(navigationPillCenter(navigation), -1);
+    }
+
     void sliderPreservesExactDecimalInput()
     {
         SettingsSlider control;

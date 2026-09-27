@@ -17,6 +17,42 @@
 class SettingsTest : public QObject {
     Q_OBJECT
 private slots:
+    void captionMouseFocusDoesNotRemainHighlighted() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        SettingsWindow settings(&store);
+        settings.show();
+        const auto buttons = settings.findChildren<QPushButton*>("captionButton");
+        QVERIFY(!buttons.isEmpty());
+        auto* minimize = buttons.first();
+        settings.findChild<QListWidget*>("navigation")->setFocus();
+        minimize->setFocus(Qt::MouseFocusReason);
+        QTest::qWait(20);
+        const QImage mouseFocus = minimize->grab().toImage();
+        minimize->clearFocus();
+        QCOMPARE(minimize->grab().toImage(), mouseFocus);
+        minimize->setFocus(Qt::TabFocusReason);
+        QVERIFY(minimize->grab().toImage() != mouseFocus);
+        settings.showMinimized();
+        settings.showNormal();
+        minimize->clearFocus();
+        QTest::qWait(20);
+        QCOMPARE(minimize->grab().toImage(), mouseFocus);
+    }
+
+    void hudFontWeightSelectionStoresANumber() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        SettingsWindow settings(&store);
+        auto* weight = settings.findChild<QComboBox*>("font_weight");
+        QVERIFY(weight);
+        weight->setCurrentIndex(weight->findData("700"));
+        QCOMPARE(store.config()["font_weight"].toInt(), 700);
+        auto config = store.config();
+        config["font_weight"] = 650;
+        QVERIFY(store.update(config));
+        QCOMPARE(weight->currentData().toString(), QString("650"));
+    }
     void resizingTextPreservesTheSelectedFamily() {
         QTemporaryDir temp;
         ConfigStore store(temp.filePath("config.json"));
@@ -31,6 +67,8 @@ private slots:
             QVERIFY(store.update(config));
             QCOMPARE(QFontInfo(heading->font()).family(), QString("Inter"));
             QCOMPARE(store.config()["settings_font_family"].toString(), QString("Inter"));
+            for (auto* label : settings.findChildren<QLabel*>())
+                QCOMPARE(QFontInfo(label->font()).family(), QString("Inter"));
         }
     }
     void restoresAccidentallyClearedShortcut() {

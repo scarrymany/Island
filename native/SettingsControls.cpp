@@ -3,11 +3,13 @@
 #include <QAbstractItemView>
 #include <QDoubleSpinBox>
 #include <QEvent>
+#include <QFocusEvent>
 #include <QHBoxLayout>
 #include <QHideEvent>
 #include <QPainter>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QStyledItemDelegate>
 #include <QStyleOptionSlider>
 
 #include <algorithm>
@@ -23,6 +25,7 @@ constexpr double SwitchHeight = 22;
 constexpr double SwitchInset = 3;
 constexpr double SwitchMargin = 4;
 const QString ThumbTrack = QStringLiteral("thumb");
+const QString NavigationTrack = QStringLiteral("navigation");
 
 QColor mix(const QColor& from, const QColor& to, double progress)
 {
@@ -180,6 +183,162 @@ void paintChoice(QComboBox* choice, const QColor& accent, const QColor& track, c
     const QString elided = choice->fontMetrics().elidedText(value, Qt::ElideRight, std::max(0, content.width()));
     painter.drawText(content, Qt::AlignVCenter | (rightToLeft ? Qt::AlignRight : Qt::AlignLeft), elided);
 }
+}
+
+class SettingsNavigationDelegate final : public QStyledItemDelegate {
+public:
+    explicit SettingsNavigationDelegate(SettingsNavigation* navigation)
+        : QStyledItemDelegate(navigation), navigation_(navigation) {}
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        QStyleOptionViewItem item(option);
+        initStyleOption(&item, index);
+        const auto* navigation = navigation_;
+        const QRectF overlap = navigation->pill_.intersected(item.rect);
+        const double highlight = item.rect.height() > 0 ? overlap.height() / item.rect.height() : 0;
+        QColor foreground = mix(mix(navigation->track_, navigation->text_, 0.64), navigation->accent_, highlight);
+        if (item.state.testFlag(QStyle::State_MouseOver))
+            foreground = mix(foreground, navigation->text_, 0.45);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        if (!item.state.testFlag(QStyle::State_Enabled)) painter->setOpacity(0.4);
+        if (navigation->keyboardFocus_ && item.state.testFlag(QStyle::State_HasFocus)) {
+            painter->setPen(QPen(mix(navigation->track_, navigation->accent_, 0.55), 1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(QRectF(item.rect).adjusted(0.5, 0.5, -0.5, -0.5), CornerRadius, CornerRadius);
+        }
+        const bool rtl = item.direction == Qt::RightToLeft;
+        QRect content = item.rect.adjusted(11, 0, -11, 0);
+        if (!item.icon.isNull()) {
+            const QSize size = item.decorationSize.boundedTo(content.size());
+            QPixmap icon = item.icon.pixmap(size, navigation->devicePixelRatioF());
+            QPainter tint(&icon);
+            tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+            tint.fillRect(icon.rect(), foreground);
+            tint.end();
+            const int x = rtl ? content.right() - size.width() + 1 : content.left();
+            painter->drawPixmap(QRect(x, content.center().y() - size.height() / 2, size.width(), size.height()), icon);
+            if (rtl) content.adjust(0, 0, -size.width() - 10, 0);
+            else content.adjust(size.width() + 10, 0, 0, 0);
+        }
+        painter->setFont(item.font);
+        painter->setPen(foreground);
+        painter->drawText(content, Qt::AlignVCenter | (rtl ? Qt::AlignRight : Qt::AlignLeft),
+            QFontMetrics(item.font).elidedText(item.text, Qt::ElideRight, std::max(0, content.width())));
+        painter->restore();
+    }
+
+private:
+    SettingsNavigation* navigation_;
+};
+
+SettingsNavigation::SettingsNavigation(QWidget* parent) : QListWidget(parent), animation_(this)
+{
+    setItemDelegate(new SettingsNavigationDelegate(this));
+    setMouseTracking(true);
+    setFocusPolicy(Qt::StrongFocus);
+    setFrameShape(QFrame::NoFrame);
+}
+
+void SettingsNavigation::setMotion(bool enabled, int durationMs, double refreshRate)
+{
+    animation_.setRefreshRate(refreshRate);
+    durationMs = std::clamp(durationMs, 0, 10000);
+    if (motionEnabled_ == enabled && durationMs_ == durationMs) return;
+    motionEnabled_ = enabled;
+    durationMs_ = durationMs;
+    if (!enabled || durationMs == 0) settlePill();
+}
+
+void SettingsNavigation::setColors(const QColor& accent, const QColor& track, const QColor& text)
+{
+    if (!accent.isValid() || !track.isValid() || !text.isValid()) return;
+    if (accent_ == accent && track_ == track && text_ == text) return;
+    accent_ = accent;
+    track_ = track;
+    text_ = text;
+    viewport()->update();
+}
+
+void SettingsNavigation::settlePill()
+{
+    animation_.stopAll();
+    target_ = currentItem() ? visualItemRect(currentItem()) : QRect{};
+    pill_ = target_;
+    viewport()->update();
+}
+
+void SettingsNavigation::movePill(bool animate)
+{
+    const QRectF destination = currentItem() ? visualItemRect(currentItem()) : QRect{};
+    if (target_ == destination && pill_.isValid()) return;
+    animation_.stopAll();
+    target_ = destination;
+    if (!animate || !motionEnabled_ || durationMs_ == 0 || !isVisible() || !pill_.isValid() || !target_.isValid()) {
+        pill_ = target_;
+        viewport()->update();
+        return;
+    }
+    const QRectF origin = pill_;
+    animation_.start(NavigationTrack, 0, 1, std::chrono::milliseconds(durationMs_), [this, origin, destination](double value) {
+        pill_ = QRectF(origin.topLeft() + (destination.topLeft() - origin.topLeft()) * value,
+            origin.size() + (destination.size() - origin.size()) * value);
+        viewport()->update();
+    });
+}
+
+void SettingsNavigation::currentChanged(const QModelIndex& current, const QModelIndex& previous)
+{
+    QListWidget::currentChanged(current, previous);
+    movePill(!signalsBlocked());
+}
+
+void SettingsNavigation::paintEvent(QPaintEvent* event)
+{
+    const QRectF destination = currentItem() ? visualItemRect(currentItem()) : QRect{};
+    if (target_ != destination) settlePill();
+    {
+        QPainter painter(viewport());
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        if (!isEnabled()) painter.setOpacity(0.4);
+        painter.setBrush(track_);
+        painter.drawRoundedRect(pill_, CornerRadius, CornerRadius);
+    }
+    QListWidget::paintEvent(event);
+}
+
+void SettingsNavigation::resizeEvent(QResizeEvent* event)
+{
+    QListWidget::resizeEvent(event);
+    settlePill();
+}
+
+void SettingsNavigation::scrollContentsBy(int dx, int dy)
+{
+    QListWidget::scrollContentsBy(dx, dy);
+    settlePill();
+}
+
+void SettingsNavigation::hideEvent(QHideEvent* event)
+{
+    settlePill();
+    QListWidget::hideEvent(event);
+}
+
+void SettingsNavigation::focusInEvent(QFocusEvent* event)
+{
+    keyboardFocus_ = event->reason() == Qt::TabFocusReason || event->reason() == Qt::BacktabFocusReason;
+    QListWidget::focusInEvent(event);
+    viewport()->update();
+}
+
+void SettingsNavigation::focusOutEvent(QFocusEvent* event)
+{
+    keyboardFocus_ = false;
+    QListWidget::focusOutEvent(event);
+    viewport()->update();
 }
 
 SettingsSlider::SettingsSlider(QWidget* parent) : QWidget(parent)

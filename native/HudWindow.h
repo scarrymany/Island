@@ -67,6 +67,10 @@ private:
     QPointF localPoint(const QPointF& point) const;
     QString hitTest(const QPointF& point) const;
     void volumeAt(const QPointF& point);
+    bool seekEnabled() const;
+    void previewSeekAt(const QPointF& point);
+    void cancelSeek();
+    double displayedPosition() const;
     QJsonObject config_;
     MediaSnapshot snapshot_;
     double volume_ = .5;
@@ -78,6 +82,7 @@ private:
     QString hover_, dragElement_;
     std::optional<QPointF> dragOrigin_;
     std::optional<QPoint> dragWindow_;
+    std::optional<double> seekPreview_;
     QPixmap cover_, oldCover_;
     QImage artwork_, oldArtwork_, displayedArtwork_;
     double coverAlpha_ = 1, titleAlpha_ = 1, playAlpha_ = 1, hoverAlpha_ = 1;
