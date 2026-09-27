@@ -25,23 +25,28 @@ constexpr double MaxCoordinate = 32768.0;
 const QStringList Elements = {
     "cover", "title", "artist", "album", "source", "progress", "time", "previous", "play", "next", "volume"
 };
-const QStringList Animations = {"appear", "disappear", "cover", "title", "progress", "hover", "play"};
+const QStringList Animations = {"appear", "disappear", "cover", "title", "progress", "hover", "play", "dock"};
 const QSet<QString> ColorFields = {
     "background", "gradient_color", "text_color", "secondary_color", "accent_color",
-    "progress_color", "icon_color", "settings_background", "settings_accent", "settings_text"
+    "progress_color", "icon_color", "settings_background", "settings_accent", "settings_text",
+    "border_color", "compact_background"
 };
 const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
     "opacity", "blur", "gradient_enabled", "radius", "font_family", "font_size",
-    "icon_size", "progress_height", "settings_font_size", "settings_opacity", "settings_blur"
+    "icon_size", "progress_height", "settings_font_size", "settings_opacity", "settings_blur",
+    "border_width", "border_opacity", "compact_radius", "compact_opacity"
 };
 const QMap<QString, QPair<double, double>> NumericRanges = {
     {"width", {260, 2000}}, {"height", {64, 600}}, {"scale", {0.5, 2.5}},
     {"cover_size", {24, 240}}, {"radius", {0, 160}}, {"opacity", {0.1, 1}},
     {"progress_height", {1, 20}}, {"icon_size", {10, 48}}, {"font_size", {8, 36}},
     {"spacing", {0, 80}}, {"animation_duration", {0, 3000}}, {"offset_y", {0, 4000}},
-    {"auto_hide_seconds", {0, 3600}}, {"settings_font_size", {8, 18}}, {"settings_opacity", {0.3, 1}}
+    {"auto_hide_seconds", {0, 3600}}, {"settings_font_size", {8, 18}}, {"settings_opacity", {0.3, 1}},
+    {"idle_collapse_seconds", {1, 120}}, {"compact_width", {48, 500}}, {"compact_height", {8, 96}},
+    {"compact_visible_height", {2, 96}}, {"compact_radius", {0, 48}}, {"compact_opacity", {0.1, 1}},
+    {"border_width", {0, 4}}, {"border_opacity", {0, 1}}
 };
-const QSet<QString> DecimalFields = {"scale", "opacity", "settings_opacity"};
+const QSet<QString> DecimalFields = {"scale", "opacity", "settings_opacity", "compact_opacity", "border_width", "border_opacity"};
 const QMap<QString, int> StringLimits = {
     {"font_family", 120}, {"hotkey", 80}, {"monitor", 256}, {"source_id", 512}, {"update_repository", 140}
 };
@@ -75,15 +80,18 @@ QJsonObject builtinThemes()
         {"Midnight", QJsonObject{
             {"background", "#09121D"}, {"gradient_color", "#142D45"}, {"accent_color", "#70CDFF"},
             {"progress_color", "#70CDFF"}, {"text_color", "#F1F8FF"}, {"secondary_color", "#88A7BD"},
-            {"icon_color", "#F1F8FF"}, {"settings_accent", "#70CDFF"}}},
+            {"icon_color", "#F1F8FF"}, {"settings_accent", "#70CDFF"},
+            {"compact_background", "#09121D"}, {"border_color", "#70CDFF"}}},
         {"Ember", QJsonObject{
             {"background", "#1B1212"}, {"gradient_color", "#3C2324"}, {"accent_color", "#FFAD87"},
             {"progress_color", "#FFAD87"}, {"text_color", "#FFF4EF"}, {"secondary_color", "#B89A91"},
-            {"icon_color", "#FFF4EF"}, {"settings_accent", "#FFAD87"}}},
+            {"icon_color", "#FFF4EF"}, {"settings_accent", "#FFAD87"},
+            {"compact_background", "#1B1212"}, {"border_color", "#FFAD87"}}},
         {"Mono", QJsonObject{
             {"background", "#151515"}, {"gradient_color", "#242424"}, {"accent_color", "#E5E5E5"},
             {"progress_color", "#E5E5E5"}, {"text_color", "#FFFFFF"}, {"secondary_color", "#A0A0A0"},
-            {"icon_color", "#FFFFFF"}, {"settings_accent", "#E5E5E5"}, {"gradient_enabled", false}}}
+            {"icon_color", "#FFFFFF"}, {"settings_accent", "#E5E5E5"}, {"gradient_enabled", false},
+            {"compact_background", "#151515"}, {"border_color", "#E5E5E5"}}}
     };
 }
 
@@ -176,6 +184,10 @@ QJsonObject ConfigStore::defaults()
         {"animations", animations}, {"animation_duration", 260}, {"monitor", ""},
         {"monitor_positions", QJsonObject{}}, {"anchor", "top_center"}, {"offset_y", 12},
         {"auto_hide_seconds", 0}, {"hotkey", "Ctrl+Alt+M"}, {"click_through", false}, {"startup", false},
+        {"idle_collapse", true}, {"idle_collapse_seconds", 3},
+        {"compact_width", 156}, {"compact_height", 32}, {"compact_visible_height", 8},
+        {"compact_radius", 16}, {"compact_opacity", 0.94}, {"compact_background", "#10121B"},
+        {"border_width", 0.0}, {"border_opacity", 0.22}, {"border_color", "#9B8CFF"},
         {"source_id", ""}, {"settings_background", "#0D0F17"}, {"settings_accent", "#9B8CFF"},
         {"settings_text", "#F5F5FA"}, {"settings_font_size", 10}, {"settings_opacity", 0.94},
         {"settings_blur", true}, {"update_repository", "scarrymany/Island"}, {"check_updates", true}

@@ -14,6 +14,7 @@ class HudWindow final : public QWidget {
     Q_OBJECT
 public:
     explicit HudWindow(const QJsonObject& config);
+    ~HudWindow() override;
     void applyConfig(const QJsonObject& config);
     void setSnapshot(const MediaSnapshot& snapshot);
     void setVolume(double value);
@@ -45,6 +46,12 @@ protected:
     void contextMenuEvent(QContextMenuEvent*) override;
 private:
     void applyNative();
+    void updateNativeRegion();
+    void setHudOpacity(double opacity);
+    void applyDockGeometry(double progress);
+    void setCollapsed(bool collapsed);
+    bool pointerInDockArea() const;
+    QScreen* targetScreen() const;
     void syncFrameTimer();
     void restartHideTimer();
     void watchScreen(QScreen* screen);
@@ -60,6 +67,9 @@ private:
     MediaSnapshot snapshot_;
     double volume_ = .5;
     bool editing_ = false, manualHidden_ = false, fadingOut_ = false, moved_ = false;
+    bool collapsed_ = false, menuOpen_ = false, hoverFromDock_ = false;
+    double dockProgress_ = 0;
+    QRect expandedGeometry_, compactGeometry_;
     QString hover_, dragElement_;
     std::optional<QPointF> dragOrigin_;
     std::optional<QPoint> dragWindow_;

@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QCloseEvent>
 #include <QContextMenuEvent>
+#include <QCursor>
 #include <QJsonArray>
 #include <QLinearGradient>
 #include <QMenu>
@@ -16,7 +17,7 @@
 #include <algorithm>
 
 namespace {
-constexpr int Shadow = 14;
+constexpr int SurfaceInset = 14;
 constexpr int FrameMs = 33;
 const QStringList Transport{"previous", "play", "next"};
 QColor ink(const QString& value, double alpha = 1) {
@@ -72,7 +73,11 @@ HudWindow::HudWindow(const QJsonObject& config)
     connect(&frameTimer_, &QTimer::timeout, this, qOverload<>(&QWidget::update));
     hideTimer_.setSingleShot(true);
     connect(&hideTimer_, &QTimer::timeout, this, [this] {
-        if (!editing_ && !underMouse()) conceal();
+        if (editing_ || menuOpen_ || dragWindow_ || !dragElement_.isEmpty()) return;
+        if (underMouse() || pointerInDockArea()) { restartHideTimer(); return; }
+        hoverFromDock_ = false;
+        if (config_["idle_collapse"].toBool(true)) setCollapsed(true);
+        else conceal();
     });
     connect(qApp, &QGuiApplication::screenAdded, this, [this](QScreen* s) { watchScreen(s); placeOnScreen(); });
     connect(qApp, &QGuiApplication::screenRemoved, this, [this] { placeOnScreen(); });
@@ -80,46 +85,148 @@ HudWindow::HudWindow(const QJsonObject& config)
     applyConfig(config);
 }
 
+HudWindow::~HudWindow() {
+    frameTimer_.stop();
+    hideTimer_.stop();
+    for (auto* animation : animations_) animation->stop();
+    if (QGuiApplication::platformName() == "windows") WindowsIntegration::releaseOverlayBackdrop(winId());
+}
+
 void HudWindow::watchScreen(QScreen* screen) {
     connect(screen, &QScreen::availableGeometryChanged, this, [this] { placeOnScreen(); });
+    connect(screen, &QScreen::geometryChanged, this, [this] { placeOnScreen(); });
+    connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this] { placeOnScreen(); });
 }
 
 QMap<QString, QRectF> HudWindow::elementRects() const { return Layout::elements(config_); }
 
-void HudWindow::placeOnScreen() {
+QScreen* HudWindow::targetScreen() const {
     auto* target = QGuiApplication::primaryScreen();
     for (auto* screen : QGuiApplication::screens())
         if (screen->name() == config_["monitor"].toString()) target = screen;
+    return target;
+}
+
+void HudWindow::placeOnScreen() {
+    auto* target = targetScreen();
     if (!target) return;
+    const double scale = config_["scale"].toDouble(1);
+    const int inset = qCeil(SurfaceInset * scale);
+    const QSize expandedSize(qRound(config_["width"].toDouble(560) * scale) + inset * 2,
+                             qRound(config_["height"].toDouble(132) * scale) + inset * 2);
     const auto saved = config_["monitor_positions"].toObject()[target->name()].toArray();
     QPoint point;
     if (saved.size() == 2) point = QPoint(saved[0].toInt(), saved[1].toInt());
-    move(Layout::screenPosition(target->availableGeometry(), size(), config_["anchor"].toString(),
-                                 config_["offset_y"].toInt(12), saved.size() == 2 ? &point : nullptr));
+    expandedGeometry_ = QRect(Layout::screenPosition(target->availableGeometry(), expandedSize,
+        config_["anchor"].toString(), config_["offset_y"].toInt(12), saved.size() == 2 ? &point : nullptr), expandedSize);
+    const QSize compactSize(std::min(target->geometry().width(),
+                                     qRound(config_["compact_width"].toDouble(156) * scale) + inset * 2),
+                            qRound(config_["compact_height"].toDouble(32) * scale) + inset * 2);
+    compactGeometry_ = Layout::dockGeometry(target->geometry(), compactSize, inset,
+        qRound(config_["compact_visible_height"].toDouble(8) * scale));
+    stopAnimation("dock");
+    applyDockGeometry(collapsed_ ? 1 : 0);
 }
 
 void HudWindow::applyConfig(const QJsonObject& config) {
     config_ = config;
-    const double scale = config_["scale"].toDouble(1);
-    const int inset = qCeil(Shadow * scale);
-    setFixedSize(qRound(config_["width"].toDouble(560) * scale) + inset * 2,
-                 qRound(config_["height"].toDouble(132) * scale) + inset * 2);
+    if (!config_["idle_collapse"].toBool(true) || editing_) collapsed_ = false;
     placeOnScreen();
     if (isVisible()) applyNative();
     syncFrameTimer(); restartHideTimer(); update();
 }
 
+void HudWindow::applyDockGeometry(double progress) {
+    dockProgress_ = std::clamp(progress, 0.0, 1.0);
+    const auto interpolate = [this](int from, int to) { return qRound(from + (to - from) * dockProgress_); };
+    const QSize size(interpolate(expandedGeometry_.width(), compactGeometry_.width()),
+                     interpolate(expandedGeometry_.height(), compactGeometry_.height()));
+    setGeometry(QRect(QPoint(interpolate(expandedGeometry_.x(), compactGeometry_.x()),
+                            interpolate(expandedGeometry_.y(), compactGeometry_.y())), size));
+    updateNativeRegion();
+    syncFrameTimer();
+    update();
+}
+
+void HudWindow::setCollapsed(bool collapsed) {
+    if (collapsed && (editing_ || menuOpen_ || manualHidden_ || !isVisible()
+        || !config_["idle_collapse"].toBool(true))) return;
+    if (collapsed_ == collapsed && dockProgress_ == (collapsed ? 1.0 : 0.0)) return;
+    collapsed_ = collapsed;
+    if (collapsed) hoverFromDock_ = false;
+    hover_.clear();
+    setToolTip({});
+    hideTimer_.stop();
+    animate("dock", dockProgress_, collapsed ? 1 : 0, [this](double value) { applyDockGeometry(value); },
+        [this] { restartHideTimer(); });
+    if (isVisible()) applyNative();
+}
+
+bool HudWindow::pointerInDockArea() const {
+    if (!hoverFromDock_ || !config_["idle_collapse"].toBool(true)) return false;
+    const auto* target = targetScreen();
+    if (!target) return false;
+    const int inset = qCeil(SurfaceInset * config_["scale"].toDouble(1));
+    const QRect card = expandedGeometry_.adjusted(inset, inset, -inset, -inset);
+    const QRect handle = compactGeometry_.adjusted(inset, inset, -inset, -inset).intersected(target->geometry());
+    const QPoint cursor = QCursor::pos();
+    if (card.contains(cursor) || handle.contains(cursor)) return true;
+    // Keep the path from the edge handle to the opening card reachable during its transition.
+    QPainterPath corridor;
+    corridor.moveTo(handle.bottomLeft()); corridor.lineTo(handle.bottomRight());
+    corridor.lineTo(card.topRight()); corridor.lineTo(card.topLeft()); corridor.closeSubpath();
+    return corridor.contains(cursor);
+}
+
 void HudWindow::applyNative() {
     if (QGuiApplication::platformName() != "windows") return;
-    WindowsIntegration::applyBackdrop(winId(), config_["blur"].toBool(true),
-                                      config_["background"].toString(), config_["opacity"].toDouble(.94));
-    WindowsIntegration::setClickThrough(winId(), config_["click_through"].toBool() && !editing_);
+    const double scale = config_["scale"].toDouble(1);
+    const int inset = qCeil(SurfaceInset * scale);
+    const QRectF card = QRectF(rect()).adjusted(inset, inset, -inset, -inset);
+    const double radius = (config_["radius"].toDouble(30) * (1 - dockProgress_)
+                           + config_["compact_radius"].toDouble(16) * dockProgress_) * scale;
+    const auto* target = targetScreen();
+    const QRectF bounds = target && dockProgress_ > 0 ? QRectF(target->geometry()).translated(-pos()) : QRectF{};
+    WindowsIntegration::applyOverlayBackdrop(winId(), config_["blur"].toBool(true), card, radius, devicePixelRatioF(),
+        config_[collapsed_ ? "compact_background" : "background"].toString("#10121B"),
+        config_[collapsed_ ? "compact_opacity" : "opacity"].toDouble(.94), bounds);
+    WindowsIntegration::setClickThrough(winId(), config_["click_through"].toBool() && !editing_ && !collapsed_);
     WindowsIntegration::ensureTopmost(winId());
+    WindowsIntegration::setOverlayOpacity(winId(), windowOpacity());
+}
+
+void HudWindow::setHudOpacity(double opacity) {
+    setWindowOpacity(opacity);
+    if (QGuiApplication::platformName() == "windows") WindowsIntegration::setOverlayOpacity(winId(), opacity);
+}
+
+void HudWindow::updateNativeRegion() {
+    if (!isVisible() || QGuiApplication::platformName() != "windows") return;
+    const double scale = config_["scale"].toDouble(1);
+    const int inset = qCeil(SurfaceInset * scale);
+    const QRectF card = QRectF(rect()).adjusted(inset, inset, -inset, -inset);
+    const double radius = (config_["radius"].toDouble(30) * (1 - dockProgress_)
+                           + config_["compact_radius"].toDouble(16) * dockProgress_) * scale;
+    const auto* target = targetScreen();
+    const QRectF bounds = target && dockProgress_ > 0 ? QRectF(target->geometry()).translated(-pos()) : QRectF{};
+    WindowsIntegration::updateOverlayRegion(winId(), card, radius, devicePixelRatioF(), bounds);
 }
 void HudWindow::showEvent(QShowEvent* e) { QWidget::showEvent(e); applyNative(); syncFrameTimer(); }
-void HudWindow::hideEvent(QHideEvent* e) { frameTimer_.stop(); QWidget::hideEvent(e); }
+void HudWindow::hideEvent(QHideEvent* e) {
+    frameTimer_.stop(); hideTimer_.stop();
+    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
+    hover_.clear(); hoverFromDock_ = false;
+    QWidget::hideEvent(e);
+}
 void HudWindow::closeEvent(QCloseEvent* e) { e->ignore(); conceal(true); }
-void HudWindow::enterEvent(QEnterEvent* e) { hideTimer_.stop(); QWidget::enterEvent(e); }
+void HudWindow::enterEvent(QEnterEvent* e) {
+    if (!manualHidden_) {
+        if (collapsed_ || dockProgress_ > 0) hoverFromDock_ = true;
+        if (collapsed_ || dockProgress_ > 0 || fadingOut_) reveal();
+        hideTimer_.stop();
+    }
+    QWidget::enterEvent(e);
+}
 void HudWindow::leaveEvent(QEvent* e) { hover_.clear(); update(); restartHideTimer(); QWidget::leaveEvent(e); }
 
 void HudWindow::stopAnimation(const QString& name) {
@@ -149,32 +256,45 @@ void HudWindow::reveal(bool manual) {
     const bool visible = isVisible();
     fadingOut_ = false;
     stopAnimation("disappear");
-    if (!visible) setWindowOpacity(config_["animations"].toObject()["appear"].toBool(true) ? 0 : 1);
+    setCollapsed(false);
+    if (!visible) setHudOpacity(config_["animations"].toObject()["appear"].toBool(true) ? 0 : 1);
     show();
+    applyNative();
     if (!visible || windowOpacity() < 1)
-        animate("appear", visible ? windowOpacity() : 0, 1, [this](double a) { setWindowOpacity(a); });
+        animate("appear", visible ? windowOpacity() : 0, 1, [this](double a) { setHudOpacity(a); },
+            [this] { restartHideTimer(); });
     restartHideTimer();
 }
 void HudWindow::conceal(bool manual) {
     if (manual) manualHidden_ = true;
-    hideTimer_.stop(); stopAnimation("appear");
+    hideTimer_.stop(); stopAnimation("appear"); stopAnimation("dock");
     if (isVisible()) {
         fadingOut_ = true;
-        animate("disappear", windowOpacity(), 0, [this](double a) { setWindowOpacity(a); }, [this] { hide(); });
+        animate("disappear", windowOpacity(), 0, [this](double a) { setHudOpacity(a); }, [this] { hide(); });
     }
 }
-void HudWindow::toggle() { if (isVisible() && !fadingOut_) conceal(true); else reveal(true); }
+void HudWindow::toggle() {
+    if (isVisible() && !fadingOut_ && !collapsed_) conceal(true);
+    else reveal(true);
+}
 void HudWindow::restartHideTimer() {
     hideTimer_.stop();
-    const int delay = config_["auto_hide_seconds"].toInt();
-    if (delay > 0 && !editing_ && isVisible()) hideTimer_.start(delay * 1000);
+    for (const auto& name : {QStringLiteral("dock"), QStringLiteral("appear")}) {
+        const auto* animation = animations_.value(name);
+        if (animation && animation->state() == QAbstractAnimation::Running) return;
+    }
+    const bool docking = config_["idle_collapse"].toBool(true);
+    const int delay = docking ? config_["idle_collapse_seconds"].toInt(3) : config_["auto_hide_seconds"].toInt();
+    if (delay > 0 && !editing_ && !menuOpen_ && !collapsed_ && !fadingOut_ && dockProgress_ == 0 && isVisible())
+        hideTimer_.start(delay * 1000);
 }
 void HudWindow::syncFrameTimer() {
-    if (isVisible() && snapshot_.playing) {
+    if (isVisible() && snapshot_.playing && dockProgress_ < 1) {
         frameTimer_.start(config_["animations"].toObject()["progress"].toBool(true) ? FrameMs : 1000);
     } else frameTimer_.stop();
 }
 void HudWindow::setEditing(bool enabled) {
+    if (editing_ != enabled) { dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); }
     editing_ = enabled;
     if (enabled) reveal(true);
     applyNative(); restartHideTimer(); update();
@@ -191,7 +311,7 @@ void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
     }
     if (changed) {
         animate("title", .15, 1, [this](double a) { titleAlpha_ = a; update(); });
-        if (snapshot.active) reveal();
+        if (snapshot.active && !isVisible()) reveal();
     }
     if (snapshot.playing != snapshot_.playing)
         animate("play", .25, 1, [this](double a) { playAlpha_ = a; update(); });
@@ -203,26 +323,46 @@ void HudWindow::paintEvent(QPaintEvent*) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
     const double scale = config_["scale"].toDouble(1);
-    const int inset = qCeil(Shadow * scale);
+    const int inset = qCeil(SurfaceInset * scale);
     p.translate(inset, inset);
     p.scale(scale, scale);
-    const QRectF card(0, 0, config_["width"].toDouble(560), config_["height"].toDouble(132));
-    const double radius = config_["radius"].toDouble(30);
+    const QRectF card(0, 0, (width() - inset * 2) / scale, (height() - inset * 2) / scale);
+    const auto mix = [this](double from, double to) { return from + (to - from) * dockProgress_; };
+    const auto blendColor = [mix](const QColor& from, const QColor& to) {
+        return QColor::fromRgbF(mix(from.redF(), to.redF()), mix(from.greenF(), to.greenF()),
+                               mix(from.blueF(), to.blueF()));
+    };
+    const double radius = std::min({mix(config_["radius"].toDouble(30), config_["compact_radius"].toDouble(16)),
+                                     card.width() / 2, card.height() / 2});
     p.setPen(Qt::NoPen);
-    for (int spread = 10; spread > 0; spread -= 2) {
-        p.setBrush(ink(config_["accent_color"].toString(), .016));
-        p.drawRoundedRect(card.adjusted(-spread, -spread / 2.0, spread, spread), radius + spread, radius + spread);
-    }
     QLinearGradient gradient(card.topLeft(), card.bottomRight());
-    const double opacity = config_["opacity"].toDouble(.94);
-    gradient.setColorAt(0, ink(config_["background"].toString(), opacity));
-    gradient.setColorAt(1, ink(config_[config_["gradient_enabled"].toBool(true) ? "gradient_color" : "background"].toString(), opacity));
+    const double opacity = mix(config_["opacity"].toDouble(.94), config_["compact_opacity"].toDouble(.94));
+    const QColor compactColor(config_["compact_background"].toString("#10121B"));
+    QColor first = blendColor(QColor(config_["background"].toString()), compactColor);
+    QColor last = blendColor(QColor(config_[config_["gradient_enabled"].toBool(true) ? "gradient_color" : "background"].toString()), compactColor);
+    first.setAlphaF(opacity); last.setAlphaF(opacity);
+    gradient.setColorAt(0, first);
+    gradient.setColorAt(1, last);
     p.setBrush(gradient);
-    p.setPen(QPen(ink(config_["accent_color"].toString(), .22), 1));
-    p.drawRoundedRect(card.adjusted(.5, .5, -.5, -.5), radius, radius);
+    const double border = config_["border_width"].toDouble(0);
+    if (border > 0)
+        p.setPen(QPen(ink(config_["border_color"].toString("#9B8CFF"), config_["border_opacity"].toDouble(.22)), border));
+    const double borderInset = border / 2;
+    p.drawRoundedRect(card.adjusted(borderInset, borderInset, -borderInset, -borderInset), radius, radius);
     QPainterPath clip;
     clip.addRoundedRect(card, radius, radius);
     p.setClipPath(clip);
+    if (dockProgress_ > 0) {
+        const double visible = std::min(card.height(), config_["compact_visible_height"].toDouble(8));
+        const double gripWidth = std::min(28.0, card.width() - 16);
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink(config_["accent_color"].toString(), .6 * dockProgress_));
+        p.drawRoundedRect(QRectF(card.center().x() - gripWidth / 2, card.bottom() - visible / 2 - 1,
+                                 gripWidth, 2), 1, 1);
+    }
+    const double contentOpacity = std::max(0.0, 1 - dockProgress_ * 2);
+    if (contentOpacity == 0) return;
+    p.setOpacity(contentOpacity);
     const auto rects = elementRects();
     for (auto it = rects.cbegin(); it != rects.cend(); ++it) {
         paintElement(p, it.key(), it.value());
@@ -249,7 +389,7 @@ void HudWindow::paintElement(QPainter& p, const QString& name, QRectF rect) {
         QString text;
         if (name == "title") {
             text = snapshot_.title.isEmpty() ? (snapshot_.active ? QStringLiteral("Без названия") : QStringLiteral("Музыка рядом")) : snapshot_.title;
-            font.setWeight(QFont::DemiBold); p.setOpacity(titleAlpha_);
+            font.setWeight(QFont::DemiBold); p.setOpacity(p.opacity() * titleAlpha_);
         } else {
             font.setPixelSize(std::max(8, fontSize - (name == "source" ? 3 : 1)));
             p.setPen(ink(secondary));
@@ -300,7 +440,7 @@ void HudWindow::paintElement(QPainter& p, const QString& name, QRectF rect) {
 }
 
 void HudWindow::paintCover(QPainter& p, const QRectF& rect, const QPixmap& image, double opacity) {
-    p.save(); p.setOpacity(opacity);
+    p.save(); p.setOpacity(p.opacity() * opacity);
     QPainterPath clip;
     const double radius = std::min(14.0, config_["radius"].toDouble(30) / 2);
     clip.addRoundedRect(rect, radius, radius); p.setClipPath(clip, Qt::IntersectClip);
@@ -320,7 +460,7 @@ void HudWindow::paintCover(QPainter& p, const QRectF& rect, const QPixmap& image
 
 QPointF HudWindow::localPoint(const QPointF& point) const {
     const double scale = config_["scale"].toDouble(1);
-    const int inset = qCeil(Shadow * scale);
+    const int inset = qCeil(SurfaceInset * scale);
     return (point - QPointF(inset, inset)) / scale;
 }
 QString HudWindow::hitTest(const QPointF& point) const {
@@ -333,6 +473,8 @@ QString HudWindow::hitTest(const QPointF& point) const {
 }
 void HudWindow::mousePressEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton) return;
+    if (collapsed_ || dockProgress_ > 0) { reveal(); return; }
+    hideTimer_.stop();
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     moved_ = false;
     if (editing_ && !hit.isEmpty()) { dragElement_ = hit; dragOrigin_ = point - elementRects()[hit].topLeft(); }
@@ -340,6 +482,7 @@ void HudWindow::mousePressEvent(QMouseEvent* e) {
     else dragElement_ = hit;
 }
 void HudWindow::mouseMoveEvent(QMouseEvent* e) {
+    if (dockProgress_ > 0) return;
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     if (hover_ != hit) {
         hover_ = hit;
@@ -357,7 +500,12 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
         positions[dragElement_] = QJsonArray{std::clamp(target.x(), 0.0, config_["width"].toDouble() - rect.width()),
                                             std::clamp(target.y(), 0.0, config_["height"].toDouble() - rect.height())};
         config_["element_positions"] = positions; config_["layout"] = "custom"; moved_ = true; update();
-    } else if (dragWindow_) { move(e->globalPosition().toPoint() - *dragWindow_); moved_ = true; }
+    } else if (dragWindow_) {
+        move(e->globalPosition().toPoint() - *dragWindow_);
+        expandedGeometry_ = geometry();
+        updateNativeRegion();
+        moved_ = true;
+    }
     else if (dragElement_ == "volume") volumeAt(point);
 }
 void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
@@ -387,15 +535,20 @@ void HudWindow::volumeAt(const QPointF& point) {
     if (rect.isValid()) emit volumeChanged(std::clamp((point.x() - rect.x() - 31) / (rect.width() - 33), 0.0, 1.0));
 }
 void HudWindow::wheelEvent(QWheelEvent* e) {
+    if (collapsed_ || dockProgress_ > 0) return;
     if (!editing_ && hitTest(localPoint(e->position())) == "volume") {
         emit volumeChanged(std::clamp(volume_ + e->angleDelta().y() / 120.0 * .02, 0.0, 1.0)); e->accept();
     }
 }
 void HudWindow::contextMenuEvent(QContextMenuEvent* e) {
+    menuOpen_ = true;
+    hideTimer_.stop();
     QMenu menu(this);
     menu.addAction(QStringLiteral("Настройки Island"), this, &HudWindow::settingsRequested);
     auto* edit = menu.addAction(QStringLiteral("Редактировать расположение")); edit->setCheckable(true); edit->setChecked(editing_);
     connect(edit, &QAction::triggered, this, &HudWindow::editingChanged);
     menu.addAction(QStringLiteral("Скрыть островок"), this, [this] { conceal(true); });
     menu.exec(e->globalPos());
+    menuOpen_ = false;
+    restartHideTimer();
 }

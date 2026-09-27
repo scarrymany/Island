@@ -172,8 +172,10 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     Q_ASSERT(store_);
     setObjectName("SettingsWindow");
     setWindowTitle(QStringLiteral("Island - настройки"));
-    setMinimumSize(920, 680);
-    resize(1080, 800);
+    const auto* initialScreen = QGuiApplication::primaryScreen();
+    const QSize available = initialScreen ? initialScreen->availableGeometry().size() - QSize(32, 32) : QSize(1080, 800);
+    setMinimumSize(QSize(820, 520).boundedTo(available));
+    resize(QSize(1080, 800).boundedTo(available));
     setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
 
@@ -230,20 +232,21 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     auto* sidebar = new QFrame;
     sidebar->setObjectName("sidebar");
     sidebar->setFixedWidth(224);
-    auto* sidebarLayout = new QVBoxLayout(sidebar);
-    sidebarLayout->setContentsMargins(16, 28, 16, 20);
-    sidebarLayout->setSpacing(8);
+    sidebarLayout_ = new QVBoxLayout(sidebar);
+    sidebarLayout_->setContentsMargins(16, 28, 16, 20);
+    sidebarLayout_->setSpacing(8);
     auto* brand = new QLabel("island");
     brand->setObjectName("brand");
-    sidebarLayout->addWidget(brand);
-    auto* subtitle = description(QStringLiteral("Музыка всегда рядом"));
-    sidebarLayout->addWidget(subtitle);
-    sidebarLayout->addSpacing(28);
+    sidebarLayout_->addWidget(brand);
+    sidebarSubtitle_ = description(QStringLiteral("Музыка всегда рядом"));
+    sidebarLayout_->addWidget(sidebarSubtitle_);
+    sidebarSpacer_ = new QSpacerItem(0, 28, QSizePolicy::Minimum, QSizePolicy::Fixed);
+    sidebarLayout_->addItem(sidebarSpacer_);
     navigation_ = new QListWidget;
     navigation_->setObjectName("navigation");
     navigation_->setFrameShape(QFrame::NoFrame);
     navigation_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    navigation_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    navigation_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     navigation_->setSpacing(4);
     navigation_->setIconSize(QSize(20, 20));
     const QStringList titles = {
@@ -256,8 +259,9 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
         item->setSizeHint(QSize(180, 43));
         navigation_->addItem(item);
     }
-    sidebarLayout->addWidget(navigation_, 1);
-    sidebarLayout->addWidget(description(QStringLiteral("Все изменения сохраняются автоматически")));
+    sidebarLayout_->addWidget(navigation_, 1);
+    sidebarHint_ = description(QStringLiteral("Все изменения сохраняются автоматически"));
+    sidebarLayout_->addWidget(sidebarHint_);
     bodyLayout->addWidget(sidebar);
 
     auto* content = new QWidget;
@@ -366,7 +370,7 @@ void SettingsWindow::addNumber(QFormLayout* form, const QString& label, const QS
         spin->setObjectName(key);
         spin->setRange(range.first, range.second);
         spin->setDecimals(2);
-        spin->setSingleStep(0.05);
+        spin->setSingleStep(key == "border_width" ? 0.25 : 0.05);
         spin->setSuffix(suffix);
         spin->setKeyboardTracking(false);
         spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
@@ -383,7 +387,7 @@ void SettingsWindow::addNumber(QFormLayout* form, const QString& label, const QS
         spin->setButtonSymbols(QAbstractSpinBox::PlusMinus);
         spin->setMinimumWidth(156);
         if (key == "auto_hide_seconds")
-            spin->setSpecialValueText(QStringLiteral("Не скрывать"));
+            spin->setSpecialValueText(QStringLiteral("Отключено"));
         controls_.insert(key, spin);
         connect(spin, &QSpinBox::valueChanged, this, [this, key](int value) { put(key, value); });
         form->addRow(label, spin);
@@ -451,20 +455,34 @@ void SettingsWindow::buildAppearance()
     addNumber(size, QStringLiteral("Размер обложки"), "cover_size", " px");
     addNumber(size, QStringLiteral("Скругление"), "radius", " px");
     addNumber(size, QStringLiteral("Отступы"), "spacing", " px");
-    auto* surface = addGroup(page, QStringLiteral("Поверхность и свет"));
+    auto* surface = addGroup(page, QStringLiteral("Фон и цвета"));
     addNumber(surface, QStringLiteral("Непрозрачность"), "opacity", {}, true);
     addToggle(surface, QStringLiteral("Размывать фон за островком"), "blur");
     addColor(surface, QStringLiteral("Основной фон"), "background");
     addToggle(surface, QStringLiteral("Градиент"), "gradient_enabled");
     addColor(surface, QStringLiteral("Второй цвет градиента"), "gradient_color");
-    addColor(surface, QStringLiteral("Акцент и подсветка"), "accent_color");
+    addColor(surface, QStringLiteral("Акцент"), "accent_color");
+    auto* border = addGroup(page, QStringLiteral("Контур островка"));
+    addNumber(border, QStringLiteral("Толщина контура"), "border_width", " px", true);
+    addColor(border, QStringLiteral("Цвет контура"), "border_color");
+    addNumber(border, QStringLiteral("Непрозрачность контура"), "border_opacity", {}, true);
+    border->addRow(description(QStringLiteral("Толщина 0 полностью отключает контур.")));
+    auto* compact = addGroup(page, QStringLiteral("Компактная полоска"));
+    compact->addRow(description(QStringLiteral("Когда островок свёрнут, большая часть панели находится за верхним краем монитора. Наведите мышь на видимую полоску, чтобы раскрыть HUD.")));
+    addNumber(compact, QStringLiteral("Ширина"), "compact_width", " px");
+    addNumber(compact, QStringLiteral("Полная высота"), "compact_height", " px");
+    addNumber(compact, QStringLiteral("Высота видимой полоски"), "compact_visible_height", " px");
+    addNumber(compact, QStringLiteral("Скругление"), "compact_radius", " px");
+    addColor(compact, QStringLiteral("Фон полоски"), "compact_background");
+    addNumber(compact, QStringLiteral("Непрозрачность"), "compact_opacity", {}, true);
+    compact->addRow(description(QStringLiteral("Размеры задаются до масштабирования. Видимая полоска не может быть выше полной панели. Таймер сворачивания находится в разделе «Система».")));
     auto* text = addGroup(page, QStringLiteral("Текст и элементы"));
     auto* fonts = new QFontComboBox;
     fonts->setObjectName("font_family");
     controls_.insert("font_family", fonts);
     connect(fonts, &QFontComboBox::currentFontChanged, this, [this](const QFont& font) { put("font_family", font.family()); });
     text->addRow(QStringLiteral("Шрифт"), fonts);
-    addNumber(text, QStringLiteral("Размер текста"), "font_size", " pt");
+    addNumber(text, QStringLiteral("Размер текста"), "font_size", " px");
     addColor(text, QStringLiteral("Основной текст"), "text_color");
     addColor(text, QStringLiteral("Вторичный текст"), "secondary_color");
     addColor(text, QStringLiteral("Иконки"), "icon_color");
@@ -567,12 +585,14 @@ void SettingsWindow::buildAnimations()
     auto* page = addPage(QStringLiteral("Анимации"), QStringLiteral("Настройте движение островка. Каждый эффект можно отключить отдельно."));
     auto* timing = addGroup(page, QStringLiteral("Плавность"));
     addNumber(timing, QStringLiteral("Длительность переходов"), "animation_duration", QStringLiteral(" мс"));
+    timing->addRow(description(QStringLiteral("Эта длительность применяется и к сворачиванию островка у верхнего края.")));
     auto* effects = addGroup(page, QStringLiteral("Эффекты"));
     const QList<QPair<QString, QString>> names = {
         {"appear", QStringLiteral("Появление HUD")}, {"disappear", QStringLiteral("Исчезновение HUD")},
         {"cover", QStringLiteral("Смена обложки")}, {"title", QStringLiteral("Смена названия трека")},
         {"progress", QStringLiteral("Плавный прогресс")}, {"hover", QStringLiteral("Подсветка при наведении")},
-        {"play", QStringLiteral("Нажатие Play / Pause")}
+        {"play", QStringLiteral("Нажатие Play / Pause")},
+        {"dock", QStringLiteral("Сворачивание и раскрытие у края")}
     };
     for (const auto& effect : names)
         addToggle(effects, effect.second, "animations/" + effect.first);
@@ -676,6 +696,10 @@ void SettingsWindow::buildProfiles()
 void SettingsWindow::buildSystem()
 {
     auto* page = addPage(QStringLiteral("Система"), QStringLiteral("Поведение HUD, горячие клавиши и оформление панели настроек."));
+    auto* idle = addGroup(page, QStringLiteral("Сворачивание у верхнего края"));
+    addToggle(idle, QStringLiteral("Сворачивать при бездействии"), "idle_collapse");
+    addNumber(idle, QStringLiteral("Сворачивать через"), "idle_collapse_seconds", QStringLiteral(" сек"));
+    idle->addRow(description(QStringLiteral("При бездействии островок уменьшается и уходит за верхний край выбранного монитора. На экране остаётся узкая полоска, которая раскрывает HUD при наведении мыши.")));
     auto* behavior = addGroup(page, QStringLiteral("Поведение островка"));
     auto* hotkey = new QKeySequenceEdit;
     hotkey->setObjectName("hotkey");
@@ -686,10 +710,11 @@ void SettingsWindow::buildSystem()
         put("hotkey", hotkey->keySequence().toString(QKeySequence::PortableText));
     });
     behavior->addRow(QStringLiteral("Показать / скрыть HUD"), hotkey);
-    addNumber(behavior, QStringLiteral("Автоскрытие после бездействия"), "auto_hide_seconds", QStringLiteral(" сек"));
+    addNumber(behavior, QStringLiteral("Полностью скрыть через"), "auto_hide_seconds", QStringLiteral(" сек"));
+    behavior->addRow(description(QStringLiteral("Значение 0 отключает таймер полного скрытия. Если включено сворачивание при бездействии, вместо полного исчезновения остаётся полоска у верхнего края.")));
     addToggle(behavior, QStringLiteral("Пропускать клики сквозь HUD"), "click_through");
     addToggle(behavior, QStringLiteral("Запускать вместе с Windows"), "startup");
-    behavior->addRow(description(QStringLiteral("Если включён пропуск кликов, управление доступно через исходный проигрыватель. Панель настроек можно открыть через значок Island в системном трее.")));
+    behavior->addRow(description(QStringLiteral("При пропуске кликов управление доступно через исходный проигрыватель. Свёрнутая полоска остаётся доступной для наведения. Настройки открываются через значок Island в трее.")));
     auto* panel = addGroup(page, QStringLiteral("Оформление настроек"));
     addColor(panel, QStringLiteral("Фон окна"), "settings_background");
     addColor(panel, QStringLiteral("Акцент интерфейса"), "settings_accent");
@@ -841,6 +866,10 @@ void SettingsWindow::refresh()
     monitorY_->setEnabled(free);
     controls_.value("offset_y")->setEnabled(!free);
     controls_.value("gradient_color")->setEnabled(config.value("gradient_enabled").toBool());
+    controls_.value("idle_collapse_seconds")->setEnabled(config.value("idle_collapse").toBool());
+    const bool borderEnabled = config.value("border_width").toDouble() > 0;
+    controls_.value("border_color")->setEnabled(borderEnabled);
+    controls_.value("border_opacity")->setEnabled(borderEnabled);
     updateCheck_->setEnabled(!updateBusy_ && !config.value("update_repository").toString().isEmpty());
     updateInstall_->setEnabled(updateAvailable_ && !updateBusy_);
     refreshing_ = false;
@@ -1059,6 +1088,25 @@ void SettingsWindow::closeEvent(QCloseEvent* event)
         editLayout_->setChecked(false);
     hide();
     event->ignore();
+}
+
+void SettingsWindow::resizeEvent(QResizeEvent* event)
+{
+    QWidget::resizeEvent(event);
+    const bool compact = height() < 680;
+    if (!navigation_ || compactSidebar_ == compact)
+        return;
+    compactSidebar_ = compact;
+    sidebarSubtitle_->setVisible(!compact);
+    sidebarHint_->setVisible(!compact);
+    sidebarLayout_->setContentsMargins(16, compact ? 12 : 28, 16, compact ? 12 : 20);
+    sidebarSpacer_->changeSize(0, compact ? 6 : 28, QSizePolicy::Minimum, QSizePolicy::Fixed);
+    navigation_->setSpacing(compact ? 1 : 4);
+    const int rowHeight = compact ? std::max(31, navigation_->fontMetrics().height() + 8) : 43;
+    for (int index = 0; index < navigation_->count(); ++index)
+        navigation_->item(index)->setSizeHint(QSize(180, rowHeight));
+    sidebarLayout_->invalidate();
+    navigation_->scrollToItem(navigation_->currentItem());
 }
 
 bool SettingsWindow::eventFilter(QObject* watched, QEvent* event)

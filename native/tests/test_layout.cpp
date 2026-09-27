@@ -30,6 +30,13 @@ private slots:
         QCOMPARE(Layout::formatTime(-3), QString("0:00"));
         QCOMPARE(Layout::formatTime(3661), QString("1:01:01"));
     }
+    void collapsedCardMeetsPhysicalMonitorEdge() {
+        QCOMPARE(Layout::dockGeometry({-1920, -1080, 1920, 1080}, {184, 60}, 14, 8),
+                 QRect(-1052, -1118, 184, 60));
+        QCOMPARE(Layout::dockGeometry({0, 0, 3840, 2160}, {368, 120}, 28, 16),
+                 QRect(1736, -76, 368, 120));
+        QCOMPARE(Layout::dockGeometry({0, 0, 1920, 1080}, {184, 60}, 14, 100).bottom() + 1 - 14, 32);
+    }
 };
 QTEST_APPLESS_MAIN(LayoutTest)
 #include "test_layout.moc"

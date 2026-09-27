@@ -2,6 +2,7 @@
 
 #include <QAbstractNativeEventFilter>
 #include <QObject>
+#include <QRectF>
 #include <QString>
 #include <QtGui/qwindowdefs.h>
 
@@ -21,6 +22,13 @@ public:
     static bool isStartupEnabled();
     static bool applyBackdrop(WId hwnd, bool enabled, const QString& tint = QStringLiteral("#10121b"),
                               double opacity = 0.9);
+    static bool applyOverlayBackdrop(WId hwnd, bool enabled, const QRectF& cardBounds, double radius,
+                                     double devicePixelRatio, const QString& tint = QStringLiteral("#10121b"),
+                                     double opacity = 0.9, const QRectF& clipBounds = {});
+    static bool updateOverlayRegion(WId hwnd, const QRectF& cardBounds, double radius,
+                                    double devicePixelRatio, const QRectF& clipBounds = {});
+    static void setOverlayOpacity(WId hwnd, double opacity);
+    static void releaseOverlayBackdrop(WId hwnd);
     static void setClickThrough(WId hwnd, bool enabled);
     static void ensureTopmost(WId hwnd);
 

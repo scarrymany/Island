@@ -64,6 +64,113 @@ void invalidValues()
     check(valid.value("visible").toObject().value("title").toBool(), "missing toggles receive defaults");
     check(valid.value("width").toInt() == 560, "missing fields receive defaults");
 }
+
+void compactConfiguration(const QString& directory)
+{
+    const QJsonObject expectedDefaults{
+        {"idle_collapse", true}, {"idle_collapse_seconds", 3},
+        {"compact_width", 156}, {"compact_height", 32}, {"compact_visible_height", 8},
+        {"compact_radius", 16}, {"compact_opacity", 0.94}, {"compact_background", "#10121B"},
+        {"border_width", 0.0}, {"border_opacity", 0.22}, {"border_color", "#9B8CFF"}
+    };
+    const auto defaults = ConfigStore::defaults();
+    for (auto field = expectedDefaults.constBegin(); field != expectedDefaults.constEnd(); ++field)
+        check(defaults.value(field.key()) == field.value(), qPrintable("compact default: " + field.key()));
+    check(defaults.value("animations").toObject().value("dock").toBool(), "dock animation enabled by default");
+
+    struct NumericField {
+        QString name;
+        double minimum;
+        double maximum;
+        bool integer;
+    };
+    const QList<NumericField> numericFields = {
+        {"idle_collapse_seconds", 1, 120, true}, {"compact_width", 48, 500, true},
+        {"compact_height", 8, 96, true}, {"compact_visible_height", 2, 96, true},
+        {"compact_radius", 0, 48, true}, {"compact_opacity", 0.1, 1, false},
+        {"border_width", 0, 4, false}, {"border_opacity", 0, 1, false}
+    };
+    for (const auto& field : numericFields) {
+        for (double accepted : {field.minimum, field.maximum}) {
+            QJsonObject config{{field.name, accepted}};
+            check(ConfigStore::validate(config), qPrintable("compact boundary accepted: " + field.name));
+        }
+        for (double rejected : {field.minimum - 0.01, field.maximum + 0.01}) {
+            QJsonObject config{{field.name, rejected}};
+            check(!ConfigStore::validate(config), qPrintable("compact boundary rejected: " + field.name));
+        }
+        QJsonObject wrongType{{field.name, true}};
+        check(!ConfigStore::validate(wrongType), qPrintable("compact boolean rejected: " + field.name));
+        if (field.integer) {
+            QJsonObject fractional{{field.name, field.minimum + 0.5}};
+            check(!ConfigStore::validate(fractional), qPrintable("compact fraction rejected: " + field.name));
+        }
+    }
+    QJsonObject fractionalBorder{{"border_width", 0.75}};
+    check(ConfigStore::validate(fractionalBorder), "fractional border width supported");
+    QJsonObject tallStrip{{"compact_height", 8}, {"compact_visible_height", 96}};
+    check(ConfigStore::validate(tallStrip), "strip height can be clamped by renderer");
+    for (QJsonObject rejected : {
+            QJsonObject{{"idle_collapse", 1}}, QJsonObject{{"animations", QJsonObject{{"dock", "yes"}}}},
+            QJsonObject{{"border_color", "red"}}, QJsonObject{{"compact_background", "#12345"}}})
+        check(!ConfigStore::validate(rejected), "compact invalid type or color rejected");
+
+    const QString legacyPath = QDir(directory).filePath("legacy-compact.json");
+    const QJsonObject oldConfig{
+        {"width", 680}, {"background", "#112233"}, {"auto_hide_seconds", 12},
+        {"animations", QJsonObject{{"appear", false}}}
+    };
+    writeJson(legacyPath, {{"schema", 1}, {"config", oldConfig},
+        {"profiles", QJsonObject{{"Legacy", oldConfig}}},
+        {"themes", QJsonObject{{"Legacy theme", QJsonObject{{"background", "#223344"}}}}},
+        {"active_profile", "Legacy"}});
+    ConfigStore migrated(legacyPath);
+    check(migrated.loadError().isEmpty(), "old schema remains readable");
+    for (auto field = expectedDefaults.constBegin(); field != expectedDefaults.constEnd(); ++field)
+        check(migrated.config().value(field.key()) == field.value(), qPrintable("legacy receives compact default: " + field.key()));
+    check(migrated.config().value("auto_hide_seconds").toInt() == 12, "existing hide timeout preserved");
+    check(!migrated.config().value("animations").toObject().value("appear").toBool(), "existing animation choice preserved");
+    check(migrated.config().value("animations").toObject().value("dock").toBool(), "old animations receive dock default");
+    check(migrated.loadProfile("Legacy"), "legacy profile accepted");
+    check(migrated.config().value("compact_visible_height").toInt() == 8, "legacy profile receives compact defaults");
+    check(migrated.applyTheme("Legacy theme"), "legacy partial theme accepted");
+
+    const QString path = QDir(directory).filePath("compact-roundtrip.json");
+    ConfigStore store(path);
+    auto styled = store.config();
+    const QJsonObject style{
+        {"compact_radius", 12}, {"compact_opacity", 0.73}, {"compact_background", "#334455"},
+        {"border_width", 0.75}, {"border_opacity", 0.38}, {"border_color", "#ABCDEF"}
+    };
+    for (auto field = style.constBegin(); field != style.constEnd(); ++field)
+        styled.insert(field.key(), field.value());
+    styled.insert("idle_collapse_seconds", 11);
+    styled.insert("compact_width", 184);
+    styled.insert("compact_height", 40);
+    styled.insert("compact_visible_height", 12);
+    auto animations = styled.value("animations").toObject();
+    animations.insert("dock", false);
+    styled.insert("animations", animations);
+    check(store.update(styled), "compact custom config saved");
+    check(ConfigStore(path).config() == styled, "compact settings roundtrip");
+    check(store.saveProfile("Compact profile"), "compact profile saved");
+    check(store.saveTheme("Compact theme"), "compact theme saved");
+    auto altered = ConfigStore::defaults();
+    altered.insert("idle_collapse", false);
+    altered.insert("idle_collapse_seconds", 7);
+    altered.insert("compact_width", 220);
+    check(store.update(altered), "compact theme application setup");
+    check(store.applyTheme("Compact theme"), "compact theme applied");
+    for (auto field = style.constBegin(); field != style.constEnd(); ++field)
+        check(store.config().value(field.key()) == field.value(), qPrintable("compact theme restores style: " + field.key()));
+    check(!store.config().value("idle_collapse").toBool(), "theme preserves collapse toggle");
+    check(store.config().value("idle_collapse_seconds").toInt() == 7, "theme preserves collapse delay");
+    check(store.config().value("compact_width").toInt() == 220, "theme preserves compact dimensions");
+    check(store.config().value("animations").toObject().value("dock").toBool(), "theme preserves dock animation preference");
+    ConfigStore reloaded(path);
+    check(reloaded.loadProfile("Compact profile"), "compact saved profile loaded");
+    check(reloaded.config() == styled, "profile restores all compact behavior and styling");
+}
 }
 
 int main(int argc, char** argv)
@@ -167,6 +274,7 @@ int main(int argc, char** argv)
     check(store.deleteTheme("Custom"), "custom theme removed");
     check(!ConfigStore(path).themes().contains("Custom"), "theme deletion persisted");
     invalidValues();
+    compactConfiguration(temporary.path());
     qInfo() << "Configuration checks completed. Failures:" << failures;
     return failures == 0 ? 0 : 1;
 }

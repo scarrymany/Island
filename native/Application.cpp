@@ -4,6 +4,7 @@
 #include <QBuffer>
 #include <QDateTime>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QIcon>
 #include <QJsonArray>
@@ -52,6 +53,7 @@ Application::Application(bool demo, bool background, QString configPath, QObject
       settings_(&store_), hud_(store_.config()), demo_(demo) {
     const QIcon appIcon(makeMark(128));
     qApp->setWindowIcon(appIcon); settings_.setWindowIcon(appIcon); tray_.setIcon(appIcon);
+    settings_.installEventFilter(this);
     setupTray();
     connect(&store_, &ConfigStore::configChanged, this, &Application::applyConfig);
     connect(&hud_, &HudWindow::configChanged, this, [this](const QJsonObject& c) {
@@ -65,10 +67,12 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(&hud_, &HudWindow::settingsRequested, this, &Application::showSettings);
     connect(&windows_, &WindowsIntegration::activated, &hud_, &HudWindow::toggle);
     connect(&media_, &MediaBridge::snapshotChanged, this, [this](const MediaSnapshot& snapshot) {
+        if (stopping_) return;
         latest_ = snapshot; hud_.setSnapshot(snapshot);
         tray_.setToolTip(snapshot.active ? (snapshot.title + " - " + snapshot.artist).left(120) : QStringLiteral("Island - музыка рядом"));
     });
     connect(&media_, &MediaBridge::sourcesChanged, this, [this](const MediaSources& sources) {
+        if (stopping_) return;
         sources_ = sources; settings_.setSources(sources);
     });
     connect(&media_, &MediaBridge::error, this, &Application::setStatus);
@@ -89,9 +93,11 @@ Application::Application(bool demo, bool background, QString configPath, QObject
             updates_.downloadAndInstall();
     });
     connect(&updates_, &UpdateService::statusChanged, this, [this](const QString& message) {
+        if (stopping_) return;
         settings_.setUpdateState(message, updates_.hasUpdate(), updates_.busy());
     });
     connect(&updates_, &UpdateService::updateAvailable, this, [this](const QString& version, const QString& notes) {
+        if (stopping_) return;
         settings_.setUpdateState(QStringLiteral("Доступна версия %1\n%2").arg(version, notes.left(3000)), true, false);
         tray_.showMessage("Island", QStringLiteral("Доступна версия %1. Откройте раздел обновлений.").arg(version));
     });
@@ -114,7 +120,9 @@ Application::Application(bool demo, bool background, QString configPath, QObject
         if (volume >= 0) hud_.setVolume(volume);
         media_.start(); volumeTimer_.start();
         if (store_.config()["check_updates"].toBool(true))
-            QTimer::singleShot(5000, this, [this] { updates_.check(store_.config()["update_repository"].toString()); });
+            QTimer::singleShot(5000, this, [this] {
+                if (!stopping_) updates_.check(store_.config()["update_repository"].toString());
+            });
     }
     hud_.reveal();
     if (!background) showSettings();
@@ -122,10 +130,18 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(qApp, &QCoreApplication::aboutToQuit, this, &Application::shutdown);
 }
 
-Application::~Application() { shutdown(); }
+Application::~Application() {
+    shutdown();
+    settings_.removeEventFilter(this);
+    if (QGuiApplication::platformName() == "windows") {
+        WindowsIntegration::releaseOverlayBackdrop(settings_.winId());
+        WindowsIntegration::releaseOverlayBackdrop(hud_.winId());
+    }
+}
 void Application::shutdown() {
     if (stopping_) return;
     stopping_ = true;
+    updates_.cancel();
     volumeTimer_.stop(); media_.stop(); tray_.hide(); hud_.hide(); settings_.hide();
 }
 
@@ -159,6 +175,7 @@ void Application::refreshProfiles() {
 }
 
 void Application::applyConfig(const QJsonObject& config) {
+    if (stopping_) return;
     QJsonObject effective = config;
     if (applied_.contains("update_repository") && applied_["update_repository"] != config["update_repository"]) {
         updates_.cancel();
@@ -188,16 +205,25 @@ void Application::applyConfig(const QJsonObject& config) {
     updateSettingsBackdrop();
 }
 void Application::updateSettingsBackdrop() {
+    if (stopping_) return;
     const auto c = store_.config();
-    if (settings_.isVisible()) WindowsIntegration::applyBackdrop(settings_.winId(), c["settings_blur"].toBool(true),
-            c["settings_background"].toString(), c["settings_opacity"].toDouble(.94));
+    if (settings_.isVisible() && !settings_.isMinimized() && QGuiApplication::platformName() == "windows")
+        WindowsIntegration::applyOverlayBackdrop(settings_.winId(), c["settings_blur"].toBool(true), settings_.rect(),
+            13, settings_.devicePixelRatioF(), c["settings_background"].toString(), c["settings_opacity"].toDouble(.94));
+}
+bool Application::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == &settings_ && (event->type() == QEvent::Show
+        || event->type() == QEvent::Resize || event->type() == QEvent::WindowStateChange
+        || event->type() == QEvent::DevicePixelRatioChange)) updateSettingsBackdrop();
+    return QObject::eventFilter(watched, event);
 }
 void Application::showSettings() {
+    if (stopping_) return;
     settings_.showNormal(); settings_.raise(); settings_.activateWindow(); updateSettingsBackdrop();
 }
 void Application::setEditing(bool enabled) { hud_.setEditing(enabled); settings_.setEditing(enabled); }
 void Application::setStatus(const QString& message) {
-    if (message.isEmpty()) return;
+    if (stopping_ || message.isEmpty()) return;
     qWarning().noquote() << message;
     errors_.append(message); if (errors_.size() > 40) errors_.removeFirst();
     settings_.setStatus(message);

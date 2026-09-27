@@ -21,6 +21,8 @@ public:
     void capture(const QString& directory);
     void writeDiagnostics(const QString& path) const;
     void shutdown();
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 private:
     void applyConfig(const QJsonObject& config);
     void setEditing(bool enabled);

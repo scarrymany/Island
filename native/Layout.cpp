@@ -78,4 +78,10 @@ QPoint screenPosition(const QRect& screen, const QSize& window, const QString& a
     return screen.topLeft() + QPoint(std::clamp(local.x(), 0, std::max(0, screen.width() - window.width())),
                                      std::clamp(local.y(), 0, std::max(0, screen.height() - window.height())));
 }
+
+QRect dockGeometry(const QRect& screen, const QSize& window, int inset, int visibleHeight) {
+    const int visible = std::clamp(visibleHeight, 1, std::max(1, window.height() - inset * 2));
+    return {QPoint(screen.x() + (screen.width() - window.width()) / 2,
+                   screen.y() + visible - window.height() + inset), window};
+}
 }

@@ -16,6 +16,7 @@ class QLabel;
 class QListWidget;
 class QPushButton;
 class QSpinBox;
+class QSpacerItem;
 class QStackedWidget;
 class QSizeGrip;
 class QVBoxLayout;
@@ -40,6 +41,7 @@ signals:
 
 protected:
     void closeEvent(QCloseEvent* event) override;
+    void resizeEvent(QResizeEvent* event) override;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
@@ -75,12 +77,17 @@ private:
     bool refreshing_ = false;
     bool updateBusy_ = false;
     bool updateAvailable_ = false;
+    bool compactSidebar_ = false;
     QHash<QString, QWidget*> controls_;
     QList<QPair<QString, QString>> sources_;
     QListWidget* navigation_ = nullptr;
     QStackedWidget* pages_ = nullptr;
     QLabel* heading_ = nullptr;
     QLabel* status_ = nullptr;
+    QLabel* sidebarSubtitle_ = nullptr;
+    QLabel* sidebarHint_ = nullptr;
+    QVBoxLayout* sidebarLayout_ = nullptr;
+    QSpacerItem* sidebarSpacer_ = nullptr;
     QLabel* sourceStatus_ = nullptr;
     QLabel* profileStatus_ = nullptr;
     QLabel* updateStatus_ = nullptr;

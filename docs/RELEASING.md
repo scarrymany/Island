@@ -10,7 +10,7 @@ GitHub Actions собирает Windows x64 на Windows Server 2022 с MSVC 202
 
 ## Новый релиз
 
-1. Обновите версию в `CMakeLists.txt`, `native/main.cpp`, `resources/island.rc` и резервную версию в `native/UpdateService.cpp`.
+1. Обновите версию в `CMakeLists.txt`, `native/main.cpp`, `resources/island.rc`, `resources/island.manifest` и резервную версию в `native/UpdateService.cpp`.
 2. Выполните сборку и проверьте установленный HUD, переключение треков, горячую клавишу и настройки:
 
    ```powershell
@@ -34,3 +34,18 @@ GitHub Actions собирает Windows x64 на Windows Server 2022 с MSVC 202
 Для подготовленных файлов в `dist` можно запустить `./scripts/release.ps1 -Tag v1.0.0 -Publish`. Нужны GitHub CLI, авторизация с правом записи в `scarrymany/Island`, чистые отслеживаемые файлы и checkout на существующем теге. Ключ `-WhatIf` выполняет локальные проверки без публикации.
 
 Встроенный updater принимает стабильный релиз с `Island-Setup.exe` или `Island-Setup.msi` и обязательным полем `sha256:...` в GitHub asset digest. ZIP предназначен для ручной распаковки. Установщик запускается по кнопке пользователя после проверки контрольной суммы.
+
+## Проверка изображения рабочего стола
+
+Тесты с `QT_QPA_PLATFORM=offscreen` проверяют поведение Qt, но не системный слой размытия. Перед выпуском изменений отрисовки выполните отдельную проверку в интерактивной сессии Windows:
+
+```powershell
+cmake -S . -B build/native -DCMAKE_PREFIX_PATH=C:/Qt/6.8.3/msvc2022_64 -DISLAND_DESKTOP_TESTS=ON
+cmake --build build/native --config Release --target test_desktop
+$env:PATH = 'C:/Qt/6.8.3/msvc2022_64/bin;' + $env:PATH
+ctest --test-dir build/native -C Release -R desktop_composition --output-on-failure
+```
+
+Проверка кратко показывает контрольный фон и тестовый HUD, сохраняет снимки изображения Windows, проверяет прозрачные области и сворачивание. Она использует демонстрационные данные и восстанавливает положение курсора. Для сохранения снимков в выбранную папку задайте `ISLAND_DESKTOP_CAPTURE_DIR`. В CI этот тест выключен, поскольку ему нужен доступный рабочий стол с системным композитором.
+
+Проверка настоящего наведения требует возможности переместить системный курсор. Если сессия блокирует эту операцию, тест отмечает её как пропущенную; проверки изображения продолжаются отдельно. Перед демонстрацией проверьте мышью раскрытие полоски, переход к кнопкам плеера и повторное сворачивание после ухода курсора.

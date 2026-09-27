@@ -8,16 +8,26 @@
 #include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
+#include <DispatcherQueue.h>
+#include <windows.ui.composition.interop.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.Composition.h>
+#include <winrt/Windows.UI.Composition.Desktop.h>
 
 #include <QColor>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
+#include <QEvent>
+#include <QHash>
 #include <QKeySequence>
 #include <QSet>
+#include <QWidget>
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 using Microsoft::WRL::ComPtr;
 
@@ -35,6 +45,9 @@ constexpr int AccentAttribute = 19;
 constexpr int AccentDisabled = 0;
 constexpr int AccentBlur = 3;
 constexpr int AccentAcrylic = 4;
+constexpr int AccentHostBackdrop = 5;
+constexpr DWORD HostBackdropAttribute = 17;
+constexpr double RegionCoordinateLimit = (1 << 26) - 2;
 
 QSet<int> activeHotkeys;
 int nextHotkeyId = FirstHotkeyId;
@@ -111,6 +124,250 @@ bool setAccent(HWND hwnd, DWORD state, DWORD color) {
     AccentPolicy policy{state, 0, color, 0};
     CompositionAttribute attribute{AccentAttribute, &policy, sizeof(policy)};
     return setComposition(hwnd, &attribute) != FALSE;
+}
+
+namespace composition = winrt::Windows::UI::Composition;
+
+struct CompositionContext {
+    bool ownsCom = false;
+    winrt::Windows::System::DispatcherQueueController queue{nullptr};
+    composition::Compositor compositor{nullptr};
+
+    CompositionContext() {
+        const HRESULT result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        ownsCom = SUCCEEDED(result);
+        if (FAILED(result) && result != RPC_E_CHANGED_MODE) winrt::check_hresult(result);
+        try {
+            if (!winrt::Windows::System::DispatcherQueue::GetForCurrentThread()) {
+                const DispatcherQueueOptions options{sizeof(DispatcherQueueOptions), DQTYPE_THREAD_CURRENT, DQTAT_COM_NONE};
+                winrt::check_hresult(CreateDispatcherQueueController(options,
+                    reinterpret_cast<ABI::Windows::System::IDispatcherQueueController**>(winrt::put_abi(queue))));
+            }
+            compositor = composition::Compositor{};
+        } catch (...) {
+            shutdown();
+            throw;
+        }
+    }
+
+    ~CompositionContext() { shutdown(); }
+
+    void shutdown() noexcept {
+        compositor = nullptr;
+        if (queue) {
+            try {
+                const auto closing = queue.ShutdownQueueAsync();
+                const auto deadline = GetTickCount64() + 2000;
+                // The dispatcher needs its native messages while releasing the last surface.
+                while (closing.Status() == winrt::Windows::Foundation::AsyncStatus::Started
+                       && GetTickCount64() < deadline) {
+                    MsgWaitForMultipleObjectsEx(0, nullptr, 10, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    MSG message{};
+                    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                        if (message.message == WM_QUIT) { PostQuitMessage(static_cast<int>(message.wParam)); break; }
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+            } catch (const winrt::hresult_error& error) {
+                qWarning() << "Cannot stop backdrop dispatcher:" << QString::fromWCharArray(error.message().c_str());
+            }
+            queue = nullptr;
+        }
+        if (ownsCom) { CoUninitialize(); ownsCom = false; }
+    }
+};
+
+std::weak_ptr<CompositionContext> sharedComposition;
+
+std::shared_ptr<CompositionContext> compositionContext() {
+    auto context = sharedComposition.lock();
+    if (!context) { context = std::make_shared<CompositionContext>(); sharedComposition = context; }
+    return context;
+}
+
+LRESULT CALLBACK backdropWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    if (message == WM_NCHITTEST) return HTTRANSPARENT;
+    if (message == WM_MOUSEACTIVATE) return MA_NOACTIVATE;
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+class OverlaySurface;
+QHash<HWND, OverlaySurface*> overlaySurfaces;
+
+class OverlaySurface final : public QObject {
+public:
+    OverlaySurface(HWND foreground, QWidget* widget)
+        : QObject(widget), foreground_(foreground), context_(compositionContext()) {
+        const auto instance = GetModuleHandleW(nullptr);
+        constexpr wchar_t className[] = L"IslandCompositionBackdrop";
+        WNDCLASSW windowClass{};
+        windowClass.lpfnWndProc = backdropWindowProc;
+        windowClass.hInstance = instance;
+        windowClass.lpszClassName = className;
+        if (!RegisterClassW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+            winrt::throw_last_error();
+        const DWORD topmost = (GetWindowLongPtrW(foreground, GWL_EXSTYLE) & WS_EX_TOPMOST) ? WS_EX_TOPMOST : 0;
+        window_ = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT
+                                      | WS_EX_NOREDIRECTIONBITMAP | topmost,
+                                 className, L"Island Backdrop", WS_POPUP, 0, 0, 1, 1,
+                                 nullptr, nullptr, instance, nullptr);
+        if (!window_) winrt::throw_last_error();
+        try {
+            const auto interop = context_->compositor.as<ABI::Windows::UI::Composition::Desktop::ICompositorDesktopInterop>();
+            winrt::check_hresult(interop->CreateDesktopWindowTarget(window_, false,
+                reinterpret_cast<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget**>(winrt::put_abi(target_))));
+            root_ = context_->compositor.CreateContainerVisual();
+            root_.Opacity(static_cast<float>(widget->windowOpacity()));
+            sprite_ = context_->compositor.CreateSpriteVisual();
+            rounded_ = context_->compositor.CreateRoundedRectangleGeometry();
+            sprite_.Clip(context_->compositor.CreateGeometricClip(rounded_));
+            sprite_.Brush(context_->compositor.CreateHostBackdropBrush());
+            screenClip_ = context_->compositor.CreateInsetClip();
+            root_.Clip(screenClip_);
+            root_.Children().InsertAtTop(sprite_);
+            target_.Root(root_);
+            widget->installEventFilter(this);
+        } catch (...) {
+            DestroyWindow(window_);
+            window_ = nullptr;
+            throw;
+        }
+    }
+
+    ~OverlaySurface() override {
+        if (parent()) parent()->removeEventFilter(this);
+        overlaySurfaces.remove(foreground_);
+        if (window_) ShowWindow(window_, SW_HIDE);
+        if (target_) { try { target_.Close(); } catch (...) {} }
+        target_ = nullptr;
+        sprite_ = nullptr;
+        root_ = nullptr;
+        rounded_ = nullptr;
+        screenClip_ = nullptr;
+        if (window_) DestroyWindow(window_);
+    }
+
+    bool configure(bool enabled, const QColor& color, double opacity) {
+        if (!enabled) { enabled_ = false; ShowWindow(window_, SW_HIDE); return true; }
+        const BOOL useHost = TRUE;
+        bool supported = SUCCEEDED(DwmSetWindowAttribute(window_, HostBackdropAttribute, &useHost, sizeof(useHost)));
+        if (!supported) {
+            // Windows 10 exposes host backdrop only through its optional, undocumented accent API.
+            const DWORD abgr = (static_cast<DWORD>(std::lround(opacity * 255.0)) << 24)
+                | (static_cast<DWORD>(color.blue()) << 16) | (static_cast<DWORD>(color.green()) << 8)
+                | static_cast<DWORD>(color.red());
+            supported = setAccent(window_, AccentHostBackdrop, abgr);
+        }
+        enabled_ = supported;
+        syncVisibility();
+        return supported;
+    }
+
+    bool update(const QRectF& card, double radius, double ratio, const QRectF& clip) {
+        bounds_ = card;
+        radius_ = radius;
+        ratio_ = ratio;
+        clip_ = clip;
+        POINT origin{};
+        if (!ClientToScreen(foreground_, &origin)) return false;
+        const int left = static_cast<int>(std::floor(card.left() * ratio));
+        const int top = static_cast<int>(std::floor(card.top() * ratio));
+        const int width = static_cast<int>(std::ceil(card.right() * ratio)) - left;
+        const int height = static_cast<int>(std::ceil(card.bottom() * ratio)) - top;
+        if (!SetWindowPos(window_, foreground_, origin.x + left, origin.y + top, width, height, SWP_NOACTIVATE)) return false;
+        const winrt::Windows::Foundation::Numerics::float2 size{static_cast<float>(card.width() * ratio), static_cast<float>(card.height() * ratio)};
+        if (sprite_.Size() != size) { sprite_.Size(size); rounded_.Size(size); }
+        root_.Size({static_cast<float>(width), static_cast<float>(height)});
+        sprite_.Offset({static_cast<float>(card.left() * ratio - left), static_cast<float>(card.top() * ratio - top), 0});
+        const float corner = static_cast<float>(radius * ratio);
+        rounded_.CornerRadius({corner, corner});
+        const QRectF visible = clip.isValid() ? card.intersected(clip) : card;
+        clippedOut_ = visible.isEmpty();
+        screenClip_.LeftInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(visible.left() * ratio) - left)) : 0);
+        screenClip_.TopInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(visible.top() * ratio) - top)) : 0);
+        screenClip_.RightInset(clip.isValid() ? static_cast<float>(std::max(0.0, width + left - std::floor(visible.right() * ratio))) : 0);
+        screenClip_.BottomInset(clip.isValid() ? static_cast<float>(std::max(0.0, height + top - std::floor(visible.bottom() * ratio))) : 0);
+        // Composition clips pixels; the HWND region independently clips native hit testing.
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
+            static_cast<int>(std::lround(radius * ratio * 2)), static_cast<int>(std::lround(radius * ratio * 2)));
+        if (!region) return false;
+        if (clip.isValid()) {
+            HRGN clipping = clippedOut_ ? CreateRectRgn(0, 0, 0, 0)
+                : CreateRectRgn(static_cast<int>(std::ceil((visible.left() - card.left()) * ratio)),
+                    static_cast<int>(std::ceil((visible.top() - card.top()) * ratio)),
+                    static_cast<int>(std::floor((visible.right() - card.left()) * ratio)),
+                    static_cast<int>(std::floor((visible.bottom() - card.top()) * ratio)));
+            if (!clipping || CombineRgn(region, region, clipping, RGN_AND) == ERROR) {
+                if (clipping) DeleteObject(clipping);
+                DeleteObject(region);
+                return false;
+            }
+            DeleteObject(clipping);
+        }
+        HRGN current = CreateRectRgn(0, 0, 0, 0);
+        const bool same = current && GetWindowRgn(window_, current) != ERROR && EqualRgn(current, region);
+        if (current) DeleteObject(current);
+        if (same) DeleteObject(region);
+        else if (!SetWindowRgn(window_, region, TRUE)) { DeleteObject(region); return false; }
+        syncVisibility();
+        return true;
+    }
+
+    void setOpacity(double opacity) { root_.Opacity(static_cast<float>(opacity)); }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::Hide) ShowWindow(window_, SW_HIDE);
+        if (event->type() == QEvent::WindowStateChange) syncVisibility();
+        if (event->type() == QEvent::Move && bounds_.isValid()) {
+            try { update(bounds_, radius_, ratio_, clip_); }
+            catch (const winrt::hresult_error& error) {
+                qWarning() << "Cannot move overlay backdrop:" << QString::fromWCharArray(error.message().c_str());
+            }
+        }
+        if (event->type() == QEvent::ZOrderChange || event->type() == QEvent::WindowActivate
+            || event->type() == QEvent::WindowDeactivate)
+            SetWindowPos(window_, foreground_, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    void syncVisibility() {
+        ShowWindow(window_, enabled_ && !clippedOut_ && IsWindowVisible(foreground_) && !IsIconic(foreground_)
+                                ? SW_SHOWNOACTIVATE : SW_HIDE);
+        SetWindowPos(window_, foreground_, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+    }
+
+    HWND foreground_ = nullptr;
+    HWND window_ = nullptr;
+    bool enabled_ = false;
+    bool clippedOut_ = false;
+    QRectF bounds_;
+    QRectF clip_;
+    double radius_ = 0;
+    double ratio_ = 1;
+    std::shared_ptr<CompositionContext> context_;
+    winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget target_{nullptr};
+    composition::ContainerVisual root_{nullptr};
+    composition::SpriteVisual sprite_{nullptr};
+    composition::CompositionRoundedRectangleGeometry rounded_{nullptr};
+    composition::InsetClip screenClip_{nullptr};
+};
+
+bool validOverlayGeometry(const QRectF& bounds, double radius, double ratio, const QRectF& clip) {
+    if (!bounds.isValid() || !std::isfinite(radius) || radius < 0 || !std::isfinite(ratio) || ratio <= 0) return false;
+    const auto valid = [ratio](const QRectF& rectangle) {
+        return std::isfinite(rectangle.left()) && std::isfinite(rectangle.top())
+            && std::isfinite(rectangle.right()) && std::isfinite(rectangle.bottom())
+            && std::abs(rectangle.left() * ratio) < RegionCoordinateLimit
+            && std::abs(rectangle.top() * ratio) < RegionCoordinateLimit
+            && std::abs(rectangle.right() * ratio) < RegionCoordinateLimit
+            && std::abs(rectangle.bottom() * ratio) < RegionCoordinateLimit;
+    };
+    return valid(bounds) && bounds.width() * ratio < RegionCoordinateLimit
+        && bounds.height() * ratio < RegionCoordinateLimit
+        && (clip.isNull() || (clip.isValid() && valid(clip)));
 }
 }
 
@@ -361,6 +618,90 @@ bool WindowsIntegration::applyBackdrop(WId window, bool enabled, const QString& 
         | (static_cast<DWORD>(color.blue()) << 16) | (static_cast<DWORD>(color.green()) << 8)
         | static_cast<DWORD>(color.red());
     return setAccent(hwnd, AccentAcrylic, abgr) || setAccent(hwnd, AccentBlur, abgr);
+}
+
+bool WindowsIntegration::updateOverlayRegion(WId window, const QRectF& cardBounds, double radius,
+                                              double devicePixelRatio, const QRectF& clipBounds) {
+    const HWND hwnd = reinterpret_cast<HWND>(window);
+    if (!hwnd || GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()
+        || !validOverlayGeometry(cardBounds, radius, devicePixelRatio, clipBounds)) return false;
+    radius = std::min(radius, std::min(cardBounds.width(), cardBounds.height()) / 2.0);
+    RECT frame{};
+    POINT origin{};
+    if (!GetWindowRect(hwnd, &frame) || !ClientToScreen(hwnd, &origin)) return false;
+    const int offsetX = origin.x - frame.left;
+    const int offsetY = origin.y - frame.top;
+    const auto x = [devicePixelRatio, offsetX](double value) { return static_cast<int>(std::floor(value * devicePixelRatio)) + offsetX; };
+    const auto y = [devicePixelRatio, offsetY](double value) { return static_cast<int>(std::floor(value * devicePixelRatio)) + offsetY; };
+    HRGN desired = CreateRoundRectRgn(x(cardBounds.left()), y(cardBounds.top()),
+        static_cast<int>(std::ceil(cardBounds.right() * devicePixelRatio)) + offsetX + 1,
+        static_cast<int>(std::ceil(cardBounds.bottom() * devicePixelRatio)) + offsetY + 1,
+        static_cast<int>(std::lround(radius * devicePixelRatio * 2)), static_cast<int>(std::lround(radius * devicePixelRatio * 2)));
+    if (!desired) return false;
+    if (clipBounds.isValid()) {
+        HRGN clip = CreateRectRgn(static_cast<int>(std::ceil(clipBounds.left() * devicePixelRatio)) + offsetX,
+            static_cast<int>(std::ceil(clipBounds.top() * devicePixelRatio)) + offsetY, x(clipBounds.right()), y(clipBounds.bottom()));
+        if (!clip || CombineRgn(desired, desired, clip, RGN_AND) == ERROR) {
+            if (clip) DeleteObject(clip);
+            DeleteObject(desired);
+            return false;
+        }
+        DeleteObject(clip);
+    }
+    HRGN current = CreateRectRgn(0, 0, 0, 0);
+    const bool same = current && GetWindowRgn(hwnd, current) != ERROR && EqualRgn(current, desired);
+    if (current) DeleteObject(current);
+    if (same) DeleteObject(desired);
+    else if (!SetWindowRgn(hwnd, desired, TRUE)) { DeleteObject(desired); return false; }
+    const auto surface = overlaySurfaces.value(hwnd, nullptr);
+    if (!surface) return true;
+    try { return surface->update(cardBounds, radius, devicePixelRatio, clipBounds); }
+    catch (const winrt::hresult_error& error) {
+        qWarning() << "Cannot update overlay backdrop:" << QString::fromWCharArray(error.message().c_str());
+        return false;
+    }
+}
+
+bool WindowsIntegration::applyOverlayBackdrop(WId window, bool enabled, const QRectF& cardBounds,
+                                               double radius, double devicePixelRatio, const QString& tint,
+                                               double opacity, const QRectF& clipBounds) {
+    const QColor color(tint);
+    if (!color.isValid() || !std::isfinite(opacity) || opacity < 0 || opacity > 1
+        || !updateOverlayRegion(window, cardBounds, radius, devicePixelRatio, clipBounds)) return false;
+    const HWND hwnd = reinterpret_cast<HWND>(window);
+    // HWND-wide Acrylic ignores SetWindowRgn; only the clipped Composition visual supplies blur.
+    applyBackdrop(window, false, tint, opacity);
+    auto surface = overlaySurfaces.value(hwnd, nullptr);
+    if (!surface && !enabled) return true;
+    try {
+        if (!surface) {
+            auto* widget = QWidget::find(window);
+            if (!widget) return false;
+            surface = new OverlaySurface(hwnd, widget);
+            overlaySurfaces.insert(hwnd, surface);
+        }
+        radius = std::min(radius, std::min(cardBounds.width(), cardBounds.height()) / 2.0);
+        if (!surface->update(cardBounds, radius, devicePixelRatio, clipBounds)) return false;
+        return surface->configure(enabled, color, opacity);
+    } catch (const winrt::hresult_error& error) {
+        qWarning() << "Overlay blur is unavailable:" << QString::fromWCharArray(error.message().c_str());
+        releaseOverlayBackdrop(window);
+        return false;
+    }
+}
+
+void WindowsIntegration::setOverlayOpacity(WId window, double opacity) {
+    if (!std::isfinite(opacity) || opacity < 0 || opacity > 1) return;
+    if (auto* surface = overlaySurfaces.value(reinterpret_cast<HWND>(window), nullptr)) {
+        try { surface->setOpacity(opacity); }
+        catch (const winrt::hresult_error& error) {
+            qWarning() << "Cannot fade overlay backdrop:" << QString::fromWCharArray(error.message().c_str());
+        }
+    }
+}
+
+void WindowsIntegration::releaseOverlayBackdrop(WId window) {
+    delete overlaySurfaces.take(reinterpret_cast<HWND>(window));
 }
 
 void WindowsIntegration::setClickThrough(WId window, bool enabled) {
