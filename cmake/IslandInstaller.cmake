@@ -23,11 +23,23 @@ island_replace_nsis("SetShellVarContext all" "SetShellVarContext current" 4)
 foreach(callback ".onInit" "un.onInit")
     island_replace_nsis("Function ${callback}\n" "Function ${callback}\n  SetShellVarContext current\n" 1)
 endforeach()
-foreach(register 0 1)
-    set(lookup "ReadRegStr $${register} HKLM \"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@\"")
-    string(REPLACE " HKLM " " HKCU " user_lookup "${lookup}")
-    island_replace_nsis("${lookup}" "${user_lookup}" 1)
-endforeach()
+set(uninstall_key [=["Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"]=])
+island_replace_nsis("ReadRegStr $0 HKLM ${uninstall_key} \"UninstallString\""
+    "ReadRegStr $0 HKCU ${uninstall_key} \"UninstallString\"" 1)
+
+set(display_lookup "ReadRegStr $1 HKLM ${uninstall_key} \"DisplayName\"")
+set(user_display_lookup "ReadRegStr $1 HKCU ${uninstall_key} \"DisplayName\"")
+string(FIND "${island_nsis_template}" "${display_lookup}" display_lookup_position)
+if(NOT display_lookup_position EQUAL -1)
+    island_replace_nsis("${display_lookup}" "${user_display_lookup}" 1)
+else()
+    # CMake 3.31 uses the configured name instead of a DisplayName lookup.
+    set(legacy_prompt [=[  MessageBox MB_YESNOCANCEL|MB_ICONEXCLAMATION \
+  "@CPACK_NSIS_PACKAGE_NAME@ is already installed. $\n$\nDo you want to uninstall the old version before installing the new one?" \
+]=])
+    string(REPLACE "@CPACK_NSIS_PACKAGE_NAME@" "$1" user_prompt "${legacy_prompt}")
+    island_replace_nsis("${legacy_prompt}" "  ${user_display_lookup}\n${user_prompt}" 1)
+endif()
 
 set(island_stop_command [=[
   IfFileExists "$INSTDIR\Island.exe" 0 island_stop_done
