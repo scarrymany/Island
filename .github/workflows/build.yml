@@ -47,6 +47,13 @@ jobs:
       - name: Build, test and package
         run: ./scripts/build.ps1 -QtPath "$env:RUNNER_TEMP/Qt/6.8.3/msvc2022_64" -Configuration Release -Package
 
+      - name: Verify generated per-user installer script
+        run: |
+          $scripts = @(Get-ChildItem -LiteralPath 'dist/_CPack_Packages' -Filter project.nsi -Recurse -File)
+          if ($scripts.Count -ne 1) { throw 'Expected exactly one generated NSIS installer script.' }
+          cmake "-DTEMPLATE_PATH=$($scripts[0].FullName)" -P cmake/VerifyNsisTemplate.cmake
+          if ($LASTEXITCODE -ne 0) { throw 'Generated NSIS installer scope verification failed.' }
+
       - name: Smoke test deployed application without the Qt SDK
         run: |
           $applicationDir = Join-Path $env:GITHUB_WORKSPACE 'dist/Island'

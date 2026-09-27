@@ -717,6 +717,7 @@ void SettingsWindow::buildUpdates()
     addToggle(settings, QStringLiteral("Проверять при запуске"), "check_updates");
     settings->addRow(description(QStringLiteral("Укажите репозиторий, в котором публикуются релизы вашей сборки Island. Пустое поле отключает проверку обновлений.")));
     auto* current = addGroup(page, QStringLiteral("Доступная версия"));
+    current->addRow(description(QStringLiteral("Установлена: Island %1").arg(QApplication::applicationVersion())));
     updateStatus_ = description(QStringLiteral("Проверка ещё не выполнялась"));
     current->addRow(updateStatus_);
     updateCheck_ = new QPushButton(QStringLiteral("Проверить обновления"));
