@@ -3,6 +3,7 @@
 #include "WindowsIntegration.h"
 
 #include <QApplication>
+#include <QBuffer>
 #include <QCursor>
 #include <QDir>
 #include <QEnterEvent>
@@ -204,6 +205,17 @@ private slots:
             track.sourceId = QStringLiteral("desktop-test");
             track.position = 30;
             track.duration = 180;
+            QImage cover(96, 96, QImage::Format_RGB32);
+            {
+                QPainter painter(&cover);
+                QLinearGradient colors(0, 0, 96, 96);
+                colors.setColorAt(0, QColor("#DFA857"));
+                colors.setColorAt(1, QColor("#654BD0"));
+                painter.fillRect(cover.rect(), colors);
+            }
+            QBuffer coverBytes(&track.cover);
+            QVERIFY(coverBytes.open(QIODevice::WriteOnly));
+            QVERIFY(cover.save(&coverBytes, "PNG"));
             track.canNext = track.canPrevious = track.canPlayPause = false;
             hud.setSnapshot(track);
             hud.reveal(true);

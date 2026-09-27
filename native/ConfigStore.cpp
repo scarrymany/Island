@@ -34,7 +34,8 @@ const QSet<QString> ColorFields = {
 const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
     "opacity", "blur", "gradient_enabled", "radius", "font_family", "font_size",
     "icon_size", "progress_height", "settings_font_size", "settings_opacity", "settings_blur",
-    "border_width", "border_opacity", "compact_radius", "compact_opacity"
+    "border_width", "border_opacity", "compact_radius", "compact_opacity",
+    "artwork_background", "artwork_background_strength"
 };
 const QMap<QString, QPair<double, double>> NumericRanges = {
     {"width", {260, 2000}}, {"height", {64, 600}}, {"scale", {0.5, 2.5}},
@@ -44,9 +45,12 @@ const QMap<QString, QPair<double, double>> NumericRanges = {
     {"auto_hide_seconds", {0, 3600}}, {"settings_font_size", {8, 18}}, {"settings_opacity", {0.3, 1}},
     {"idle_collapse_seconds", {1, 120}}, {"compact_width", {48, 500}}, {"compact_height", {8, 96}},
     {"compact_visible_height", {2, 96}}, {"compact_radius", {0, 48}}, {"compact_opacity", {0.1, 1}},
-    {"border_width", {0, 4}}, {"border_opacity", {0, 1}}
+    {"border_width", {0, 4}}, {"border_opacity", {0, 1}}, {"artwork_background_strength", {0, 1}}
 };
-const QSet<QString> DecimalFields = {"scale", "opacity", "settings_opacity", "compact_opacity", "border_width", "border_opacity"};
+const QSet<QString> DecimalFields = {
+    "scale", "opacity", "settings_opacity", "compact_opacity", "border_width", "border_opacity",
+    "artwork_background_strength"
+};
 const QMap<QString, int> StringLimits = {
     {"font_family", 120}, {"hotkey", 80}, {"monitor", 256}, {"source_id", 512}, {"update_repository", 140}
 };
@@ -177,6 +181,7 @@ QJsonObject ConfigStore::defaults()
     return {
         {"width", 560}, {"height", 132}, {"scale", 1.0}, {"cover_size", 76}, {"radius", 30},
         {"opacity", 0.94}, {"blur", true}, {"background", "#10121B"}, {"gradient_enabled", true},
+        {"artwork_background", true}, {"artwork_background_strength", 0.75},
         {"gradient_color", "#242344"}, {"text_color", "#F5F5FA"}, {"secondary_color", "#9394AB"},
         {"accent_color", "#9B8CFF"}, {"progress_color", "#9B8CFF"}, {"progress_height", 3},
         {"icon_color", "#F5F5FA"}, {"icon_size", 18}, {"font_family", "Segoe UI"}, {"font_size", 13},

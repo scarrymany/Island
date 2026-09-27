@@ -13,6 +13,7 @@ set(CMAKE_INSTALL_LIBDIR ".")
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Test)
 
 add_library(island_core STATIC
+    native/AnimationClock.cpp native/AnimationClock.h
     native/ConfigStore.cpp native/ConfigStore.h
     native/MediaBridge.cpp native/MediaBridge.h
     native/WindowsIntegration.cpp native/WindowsIntegration.h
@@ -34,7 +35,7 @@ set_target_properties(Island PROPERTIES OUTPUT_NAME Island)
 include(CTest)
 option(ISLAND_DESKTOP_TESTS "Build compositor checks requiring an interactive Windows desktop" OFF)
 if(BUILD_TESTING)
-    foreach(test_name config layout hud platform media)
+    foreach(test_name config layout hud platform media animation)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/native/tests/test_${test_name}.cpp")
             qt_add_executable(test_${test_name} native/tests/test_${test_name}.cpp)
             target_link_libraries(test_${test_name} PRIVATE island_core Qt6::Test)

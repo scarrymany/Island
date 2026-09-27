@@ -4,6 +4,8 @@
 #include <QJsonArray>
 #include <QCursor>
 #include <QEnterEvent>
+#include <QBuffer>
+#include <QPainter>
 #include <QListWidget>
 #include <QScreen>
 #include <QTemporaryDir>
@@ -22,7 +24,112 @@ private:
     static QPoint point(HudWindow& hud, const QString& name) {
         return hud.elementRects()[name].center().toPoint() + QPoint(14, 14);
     }
+    static QByteArray artwork(const QColor& left, const QColor& right = {}) {
+        QImage image(100, 100, QImage::Format_RGB32);
+        image.fill(left);
+        if (right.isValid()) {
+            QPainter painter(&image);
+            painter.fillRect(50, 0, 50, 100, right);
+        }
+        QByteArray bytes;
+        QBuffer buffer(&bytes); buffer.open(QIODevice::WriteOnly);
+        image.save(&buffer, "PNG");
+        return bytes;
+    }
+    static QJsonObject backgroundConfig() {
+        auto result = config();
+        auto visible = result["visible"].toObject();
+        for (auto it = visible.begin(); it != visible.end(); ++it) it.value() = false;
+        result["visible"] = visible;
+        result["gradient_enabled"] = false;
+        result["idle_collapse"] = false;
+        result["background"] = "#14141C";
+        result["opacity"] = 0.6;
+        result["artwork_background"] = true;
+        result["artwork_background_strength"] = 1.0;
+        return result;
+    }
+    static QColor backgroundPixel(HudWindow& hud) {
+        return hud.grab().toImage().pixelColor(hud.width() / 2, hud.height() / 2);
+    }
 private slots:
+    void artworkBackgroundFollowsTrackAndPreservesOpacity() {
+        auto c = backgroundConfig();
+        HudWindow hud(c); hud.reveal();
+        const QColor fallback = backgroundPixel(hud);
+        MediaSnapshot track; track.active = true; track.cover = artwork(Qt::red);
+        hud.setSnapshot(track);
+        const QColor red = backgroundPixel(hud);
+        QVERIFY(red.red() > red.blue() + 40);
+        QCOMPARE(red.alpha(), fallback.alpha());
+        track.cover = artwork(Qt::blue); hud.setSnapshot(track);
+        const QColor blue = backgroundPixel(hud);
+        QVERIFY(blue.blue() > blue.red() + 40);
+        QCOMPARE(blue.alpha(), fallback.alpha());
+        c["artwork_background"] = false; hud.applyConfig(c);
+        QCOMPARE(backgroundPixel(hud), fallback);
+        c["artwork_background"] = true; c["artwork_background_strength"] = 0.0; hud.applyConfig(c);
+        QCOMPARE(backgroundPixel(hud), fallback);
+        c["artwork_background_strength"] = 1.0; hud.applyConfig(c);
+        track.cover.clear(); hud.setSnapshot(track);
+        QCOMPARE(backgroundPixel(hud), fallback);
+        track.cover = "invalid image"; hud.setSnapshot(track);
+        QCOMPARE(backgroundPixel(hud), fallback);
+    }
+    void artworkBackgroundBlursEdgesAndKeepsBrightCoversReadable() {
+        HudWindow hud(backgroundConfig()); hud.reveal();
+        MediaSnapshot track; track.active = true; track.cover = artwork(Qt::red, Qt::blue);
+        hud.setSnapshot(track);
+        const QImage pixels = hud.grab().toImage();
+        const int middle = hud.width() / 2;
+        const int y = hud.height() / 2;
+        const QColor left = pixels.pixelColor(middle - 70, y);
+        const QColor right = pixels.pixelColor(middle + 70, y);
+        QVERIFY(left.red() > right.red() + 10);
+        QVERIFY(right.blue() > left.blue() + 10);
+        for (int x = middle - 60; x < middle + 60; ++x) {
+            const QColor a = pixels.pixelColor(x, y), b = pixels.pixelColor(x + 1, y);
+            QVERIFY(qAbs(a.red() - b.red()) < 10);
+            QVERIFY(qAbs(a.blue() - b.blue()) < 10);
+        }
+        track.cover = artwork(Qt::white); hud.setSnapshot(track);
+        const QColor white = backgroundPixel(hud);
+        QVERIFY(white.red() <= 60 && white.green() <= 60 && white.blue() <= 60);
+    }
+    void artworkTransitionCanBeInterruptedWithoutColorJump() {
+        auto c = backgroundConfig();
+        HudWindow hud(c); hud.reveal();
+        MediaSnapshot track; track.active = true; track.cover = artwork(Qt::red);
+        hud.setSnapshot(track);
+        auto effects = c["animations"].toObject(); effects["cover"] = true;
+        c["animations"] = effects; c["animation_duration"] = 600; hud.applyConfig(c);
+        track.cover = artwork(Qt::blue); hud.setSnapshot(track);
+        QTest::qWait(150);
+        const QColor before = backgroundPixel(hud);
+        QVERIFY(before.red() > 10 && before.blue() > 10);
+        track.cover = artwork(Qt::green); hud.setSnapshot(track);
+        const QColor after = backgroundPixel(hud);
+        QVERIFY(qAbs(before.red() - after.red()) <= 2);
+        QVERIFY(qAbs(before.blue() - after.blue()) <= 2);
+        QTest::qWait(650);
+        const QColor settled = backgroundPixel(hud);
+        QVERIFY(settled.green() > settled.red() + 20);
+        QVERIFY(settled.green() > settled.blue() + 20);
+    }
+    void hidingDuringArtworkTransitionSettlesToCurrentTrack() {
+        auto c = backgroundConfig();
+        HudWindow hud(c); hud.reveal();
+        MediaSnapshot track; track.active = true; track.cover = artwork(Qt::red);
+        hud.setSnapshot(track);
+        auto effects = c["animations"].toObject(); effects["cover"] = true;
+        c["animations"] = effects; c["animation_duration"] = 600; hud.applyConfig(c);
+        track.cover = artwork(Qt::blue); hud.setSnapshot(track);
+        QTest::qWait(100);
+        hud.conceal(true); hud.reveal(true);
+        const QColor current = backgroundPixel(hud);
+        QVERIFY(current.blue() > current.red() + 100);
+        QVERIFY(current.red() < 5);
+    }
     void playbackAndSeekAreDispatched() {
         HudWindow hud(config()); MediaSnapshot media; media.active = true; media.duration = 200; media.canSeek = true;
         hud.setSnapshot(media); hud.reveal();

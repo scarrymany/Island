@@ -1,11 +1,12 @@
 #pragma once
 
+#include "AnimationClock.h"
 #include "MediaBridge.h"
 #include <QJsonObject>
+#include <QImage>
 #include <QMap>
 #include <QPixmap>
 #include <QTimer>
-#include <QVariantAnimation>
 #include <QWidget>
 #include <functional>
 #include <optional>
@@ -33,6 +34,7 @@ signals:
     void settingsRequested();
     void editingChanged(bool enabled);
 protected:
+    bool event(QEvent*) override;
     void paintEvent(QPaintEvent*) override;
     void showEvent(QShowEvent*) override;
     void hideEvent(QHideEvent*) override;
@@ -53,6 +55,7 @@ private:
     bool pointerInDockArea() const;
     QScreen* targetScreen() const;
     void syncFrameTimer();
+    void syncRefreshRate();
     void restartHideTimer();
     void watchScreen(QScreen* screen);
     void animate(const QString& name, double from, double to, std::function<void(double)> callback,
@@ -74,7 +77,9 @@ private:
     std::optional<QPointF> dragOrigin_;
     std::optional<QPoint> dragWindow_;
     QPixmap cover_, oldCover_;
+    QImage artwork_, oldArtwork_, displayedArtwork_;
     double coverAlpha_ = 1, titleAlpha_ = 1, playAlpha_ = 1, hoverAlpha_ = 1;
-    QTimer frameTimer_, hideTimer_;
-    QMap<QString, QVariantAnimation*> animations_;
+    QChronoTimer frameTimer_;
+    QTimer hideTimer_;
+    AnimationClock animations_;
 };

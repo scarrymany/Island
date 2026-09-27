@@ -14,12 +14,95 @@
 #include <QPainterPath>
 #include <QScreen>
 #include <QWheelEvent>
+#include <QWindow>
 #include <algorithm>
+#include <array>
+#include <cmath>
+#include <utility>
 
 namespace {
 constexpr int SurfaceInset = 14;
-constexpr int FrameMs = 33;
+constexpr int ArtworkSize = 96;
+constexpr int ArtworkBlurRadius = 10;
+constexpr int ArtworkBlurPasses = 3;
+constexpr double ArtworkMaxLuminance = 0.035;
 const QStringList Transport{"previous", "play", "next"};
+
+QImage blurredArtwork(const QPixmap& cover) {
+    if (cover.isNull()) return {};
+    QImage image(ArtworkSize, ArtworkSize, QImage::Format_RGB32);
+    image.fill(Qt::black);
+    {
+        QPainter painter(&image);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        painter.drawPixmap(image.rect(), cover);
+    }
+    constexpr int samples = ArtworkBlurRadius * 2 + 1;
+    for (int pass = 0; pass < ArtworkBlurPasses * 2; ++pass) {
+        QImage blurred(image.size(), QImage::Format_RGB32);
+        const bool horizontal = pass % 2 == 0;
+        for (int line = 0; line < ArtworkSize; ++line) {
+            const auto pixel = [&](int index) {
+                index = std::clamp(index, 0, ArtworkSize - 1);
+                const int x = horizontal ? index : line;
+                const int y = horizontal ? line : index;
+                return reinterpret_cast<const QRgb*>(image.constScanLine(y))[x];
+            };
+            int red = 0, green = 0, blue = 0;
+            const auto add = [&](QRgb color, int direction) {
+                red += qRed(color) * direction;
+                green += qGreen(color) * direction;
+                blue += qBlue(color) * direction;
+            };
+            for (int index = -ArtworkBlurRadius; index <= ArtworkBlurRadius; ++index) add(pixel(index), 1);
+            for (int index = 0; index < ArtworkSize; ++index) {
+                const int x = horizontal ? index : line;
+                const int y = horizontal ? line : index;
+                reinterpret_cast<QRgb*>(blurred.scanLine(y))[x] = qRgb(red / samples, green / samples, blue / samples);
+                add(pixel(index - ArtworkBlurRadius), -1);
+                add(pixel(index + ArtworkBlurRadius + 1), 1);
+            }
+        }
+        image = std::move(blurred);
+    }
+    static const auto linear = [] {
+        std::array<double, 256> values{};
+        for (int index = 0; index < 256; ++index) {
+            const double channel = index / 255.0;
+            values[index] = channel <= 0.04045 ? channel / 12.92 : std::pow((channel + 0.055) / 1.055, 2.4);
+        }
+        return values;
+    }();
+    const auto channel = [](double value) {
+        return qRound(255 * (value <= 0.0031308 ? value * 12.92 : 1.055 * std::pow(value, 1 / 2.4) - 0.055));
+    };
+    // Limit lightness in linear RGB so white covers stay readable without bleaching colored covers.
+    for (int y = 0; y < image.height(); ++y) {
+        auto* row = reinterpret_cast<QRgb*>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const double red = linear[qRed(row[x])], green = linear[qGreen(row[x])], blue = linear[qBlue(row[x])];
+            const double luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+            if (luminance <= ArtworkMaxLuminance) continue;
+            const double exposure = ArtworkMaxLuminance / luminance;
+            row[x] = qRgb(channel(red * exposure), channel(green * exposure), channel(blue * exposure));
+        }
+    }
+    return image;
+}
+
+QImage blendArtwork(const QImage& previous, const QImage& next, double progress) {
+    if (progress >= 1 || previous.cacheKey() == next.cacheKey()) return next;
+    if (progress <= 0) return previous;
+    QImage blended(ArtworkSize, ArtworkSize, QImage::Format_ARGB32_Premultiplied);
+    blended.fill(Qt::transparent);
+    QPainter painter(&blended);
+    painter.setOpacity(1 - progress);
+    painter.drawImage(0, 0, previous);
+    painter.setCompositionMode(QPainter::CompositionMode_Plus);
+    painter.setOpacity(progress);
+    painter.drawImage(0, 0, next);
+    return blended;
+}
 QColor ink(const QString& value, double alpha = 1) {
     QColor c(value);
     c.setAlphaF(std::clamp(alpha, 0.0, 1.0));
@@ -69,8 +152,8 @@ HudWindow::HudWindow(const QJsonObject& config)
     setAttribute(Qt::WA_ShowWithoutActivating);
     setMouseTracking(true);
     setAccessibleName(QStringLiteral("Island - музыкальный оверлей"));
-    frameTimer_.setInterval(FrameMs);
-    connect(&frameTimer_, &QTimer::timeout, this, qOverload<>(&QWidget::update));
+    frameTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&frameTimer_, &QChronoTimer::timeout, this, qOverload<>(&QWidget::update));
     hideTimer_.setSingleShot(true);
     connect(&hideTimer_, &QTimer::timeout, this, [this] {
         if (editing_ || menuOpen_ || dragWindow_ || !dragElement_.isEmpty()) return;
@@ -88,7 +171,7 @@ HudWindow::HudWindow(const QJsonObject& config)
 HudWindow::~HudWindow() {
     frameTimer_.stop();
     hideTimer_.stop();
-    for (auto* animation : animations_) animation->stop();
+    animations_.stopAll();
     if (QGuiApplication::platformName() == "windows") WindowsIntegration::releaseOverlayBackdrop(winId());
 }
 
@@ -96,6 +179,20 @@ void HudWindow::watchScreen(QScreen* screen) {
     connect(screen, &QScreen::availableGeometryChanged, this, [this] { placeOnScreen(); });
     connect(screen, &QScreen::geometryChanged, this, [this] { placeOnScreen(); });
     connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this] { placeOnScreen(); });
+    connect(screen, &QScreen::refreshRateChanged, this, [this] { syncRefreshRate(); });
+}
+
+bool HudWindow::event(QEvent* event) {
+    const bool handled = QWidget::event(event);
+    if (event->type() == QEvent::Move || event->type() == QEvent::DevicePixelRatioChange) syncRefreshRate();
+    return handled;
+}
+
+void HudWindow::syncRefreshRate() {
+    const bool docked = collapsed_ || dockProgress_ > 0;
+    const auto* target = !docked && isVisible() && windowHandle() ? windowHandle()->screen() : targetScreen();
+    animations_.setRefreshRate(target ? target->refreshRate() : 0);
+    syncFrameTimer();
 }
 
 QMap<QString, QRectF> HudWindow::elementRects() const { return Layout::elements(config_); }
@@ -126,6 +223,7 @@ void HudWindow::placeOnScreen() {
         qRound(config_["compact_visible_height"].toDouble(8) * scale));
     stopAnimation("dock");
     applyDockGeometry(collapsed_ ? 1 : 0);
+    syncRefreshRate();
 }
 
 void HudWindow::applyConfig(const QJsonObject& config) {
@@ -211,9 +309,17 @@ void HudWindow::updateNativeRegion() {
     const QRectF bounds = target && dockProgress_ > 0 ? QRectF(target->geometry()).translated(-pos()) : QRectF{};
     WindowsIntegration::updateOverlayRegion(winId(), card, radius, devicePixelRatioF(), bounds);
 }
-void HudWindow::showEvent(QShowEvent* e) { QWidget::showEvent(e); applyNative(); syncFrameTimer(); }
+void HudWindow::showEvent(QShowEvent* e) {
+    QWidget::showEvent(e);
+    if (windowHandle())
+        connect(windowHandle(), &QWindow::screenChanged, this, &HudWindow::syncRefreshRate, Qt::UniqueConnection);
+    syncRefreshRate(); applyNative(); syncFrameTimer();
+}
 void HudWindow::hideEvent(QHideEvent* e) {
     frameTimer_.stop(); hideTimer_.stop();
+    animations_.stopAll();
+    coverAlpha_ = titleAlpha_ = playAlpha_ = hoverAlpha_ = 1;
+    displayedArtwork_ = artwork_;
     dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
     hover_.clear(); hoverFromDock_ = false;
     QWidget::hideEvent(e);
@@ -230,24 +336,20 @@ void HudWindow::enterEvent(QEnterEvent* e) {
 void HudWindow::leaveEvent(QEvent* e) { hover_.clear(); update(); restartHideTimer(); QWidget::leaveEvent(e); }
 
 void HudWindow::stopAnimation(const QString& name) {
-    if (auto* previous = animations_.take(name)) { previous->stop(); previous->deleteLater(); }
+    animations_.stop(name);
 }
 
 void HudWindow::animate(const QString& name, double from, double to,
                         std::function<void(double)> callback, std::function<void()> finished) {
     stopAnimation(name);
-    if (!config_["animations"].toObject()[name].toBool(true)) {
+    const bool transition = name == "dock" || name == "appear" || name == "disappear";
+    if (!config_["animations"].toObject()[name].toBool(true)
+        || (!transition && (!isVisible() || dockProgress_ == 1))) {
         callback(to); if (finished) finished(); return;
     }
-    auto* animation = new QVariantAnimation(this);
-    animation->setDuration(config_["animation_duration"].toInt(260));
-    animation->setStartValue(from); animation->setEndValue(to);
-    animation->setEasingCurve(QEasingCurve::OutCubic);
-    connect(animation, &QVariantAnimation::valueChanged, this, [callback](const QVariant& value) { callback(value.toDouble()); });
-    if (finished) connect(animation, &QVariantAnimation::finished, this, finished);
-    animations_[name] = animation;
-    callback(from);
-    animation->start();
+    syncRefreshRate();
+    animations_.start(name, from, to, std::chrono::milliseconds(config_["animation_duration"].toInt(260)),
+                      std::move(callback), std::move(finished));
 }
 
 void HudWindow::reveal(bool manual) {
@@ -280,8 +382,7 @@ void HudWindow::toggle() {
 void HudWindow::restartHideTimer() {
     hideTimer_.stop();
     for (const auto& name : {QStringLiteral("dock"), QStringLiteral("appear")}) {
-        const auto* animation = animations_.value(name);
-        if (animation && animation->state() == QAbstractAnimation::Running) return;
+        if (animations_.isRunning(name)) return;
     }
     const bool docking = config_["idle_collapse"].toBool(true);
     const int delay = docking ? config_["idle_collapse_seconds"].toInt(3) : config_["auto_hide_seconds"].toInt();
@@ -290,7 +391,10 @@ void HudWindow::restartHideTimer() {
 }
 void HudWindow::syncFrameTimer() {
     if (isVisible() && snapshot_.playing && dockProgress_ < 1) {
-        frameTimer_.start(config_["animations"].toObject()["progress"].toBool(true) ? FrameMs : 1000);
+        const auto interval = config_["animations"].toObject()["progress"].toBool(true)
+            ? animations_.frameInterval() : std::chrono::seconds(1);
+        if (frameTimer_.interval() != interval) frameTimer_.setInterval(interval);
+        if (!frameTimer_.isActive()) frameTimer_.start();
     } else frameTimer_.stop();
 }
 void HudWindow::setEditing(bool enabled) {
@@ -307,7 +411,13 @@ void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
     if (snapshot.cover != snapshot_.cover) {
         oldCover_ = cover_; cover_ = QPixmap();
         if (!snapshot.cover.isEmpty()) cover_.loadFromData(snapshot.cover);
-        animate("cover", 0, 1, [this](double a) { coverAlpha_ = a; update(); });
+        oldArtwork_ = displayedArtwork_;
+        artwork_ = blurredArtwork(cover_);
+        animate("cover", 0, 1, [this](double a) {
+            coverAlpha_ = a;
+            displayedArtwork_ = blendArtwork(oldArtwork_, artwork_, a);
+            update();
+        });
     }
     if (changed) {
         animate("title", .15, 1, [this](double a) { titleAlpha_ = a; update(); });
@@ -344,14 +454,25 @@ void HudWindow::paintEvent(QPaintEvent*) {
     gradient.setColorAt(0, first);
     gradient.setColorAt(1, last);
     p.setBrush(gradient);
-    const double border = config_["border_width"].toDouble(0);
-    if (border > 0)
-        p.setPen(QPen(ink(config_["border_color"].toString("#9B8CFF"), config_["border_opacity"].toDouble(.22)), border));
-    const double borderInset = border / 2;
-    p.drawRoundedRect(card.adjusted(borderInset, borderInset, -borderInset, -borderInset), radius, radius);
+    p.drawRoundedRect(card, radius, radius);
     QPainterPath clip;
     clip.addRoundedRect(card, radius, radius);
     p.setClipPath(clip);
+    if (config_["artwork_background"].toBool(true) && !displayedArtwork_.isNull()) {
+        p.save();
+        p.setRenderHint(QPainter::SmoothPixmapTransform);
+        p.setCompositionMode(QPainter::CompositionMode_SourceAtop);
+        p.setOpacity(config_["artwork_background_strength"].toDouble(.75) * (1 - dockProgress_));
+        p.drawImage(card, displayedArtwork_);
+        p.restore();
+    }
+    const double border = config_["border_width"].toDouble(0);
+    if (border > 0) {
+        p.setBrush(Qt::NoBrush);
+        p.setPen(QPen(ink(config_["border_color"].toString("#9B8CFF"), config_["border_opacity"].toDouble(.22)), border));
+        const double borderInset = border / 2;
+        p.drawRoundedRect(card.adjusted(borderInset, borderInset, -borderInset, -borderInset), radius, radius);
+    }
     if (dockProgress_ > 0) {
         const double visible = std::min(card.height(), config_["compact_visible_height"].toDouble(8));
         const double gripWidth = std::min(28.0, card.width() - 16);

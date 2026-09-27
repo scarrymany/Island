@@ -171,6 +171,76 @@ void compactConfiguration(const QString& directory)
     check(reloaded.loadProfile("Compact profile"), "compact saved profile loaded");
     check(reloaded.config() == styled, "profile restores all compact behavior and styling");
 }
+
+void artworkConfiguration(const QString& directory)
+{
+    const auto defaults = ConfigStore::defaults();
+    check(defaults.value("artwork_background") == QJsonValue(true), "artwork background enabled by default");
+    check(defaults.value("artwork_background_strength") == QJsonValue(0.75), "artwork background default strength");
+    check(ConfigStore::numericRange("artwork_background_strength") == qMakePair(0.0, 1.0), "artwork strength control range");
+    for (double strength : {0.0, 0.375, 1.0}) {
+        QJsonObject config{{"artwork_background_strength", strength}};
+        check(ConfigStore::validate(config), "artwork strength accepts endpoints and fractions");
+        check(config.value("artwork_background_strength").toDouble() == strength, "artwork strength retained exactly");
+    }
+    const QList<QJsonObject> invalid = {
+        {{"artwork_background", 1}}, {{"artwork_background", "true"}}, {{"artwork_background", QJsonValue::Null}},
+        {{"artwork_background_strength", true}}, {{"artwork_background_strength", "0.75"}},
+        {{"artwork_background_strength", -0.001}}, {{"artwork_background_strength", 1.001}},
+        {{"artwork_background_strength", QJsonValue(std::numeric_limits<double>::infinity())}},
+        {{"artwork_background_strength", QJsonValue(std::numeric_limits<double>::quiet_NaN())}}
+    };
+    for (auto config : invalid) {
+        QString error;
+        check(!ConfigStore::validate(config, &error), "invalid artwork option rejected");
+        check(!error.isEmpty(), "invalid artwork option reports the failure");
+    }
+
+    const QString legacyPath = QDir(directory).filePath("legacy-artwork.json");
+    const QJsonObject legacyConfig{{"background", "#112233"}, {"compact_width", 208},
+        {"compact_visible_height", 12}, {"idle_collapse_seconds", 9}};
+    writeJson(legacyPath, {{"schema", 1}, {"config", legacyConfig},
+        {"profiles", QJsonObject{{"Existing profile", legacyConfig}}},
+        {"themes", QJsonObject{{"Existing theme", QJsonObject{{"background", "#334455"}}}}}});
+    ConfigStore legacy(legacyPath);
+    check(legacy.loadError().isEmpty(), "existing configuration loads with artwork defaults");
+    check(legacy.config().value("artwork_background") == QJsonValue(true), "existing config receives artwork toggle");
+    check(legacy.config().value("artwork_background_strength") == QJsonValue(0.75), "existing config receives artwork strength");
+    check(legacy.loadProfile("Existing profile"), "existing profile remains loadable");
+    check(legacy.config().value("artwork_background_strength") == QJsonValue(0.75), "existing profile receives artwork strength");
+    for (auto field = legacyConfig.constBegin(); field != legacyConfig.constEnd(); ++field)
+        check(legacy.config().value(field.key()) == field.value(), "artwork migration preserves prior settings");
+
+    auto customized = legacy.config();
+    customized.insert("artwork_background", false);
+    customized.insert("artwork_background_strength", 0.375);
+    check(legacy.update(customized), "disabled artwork background saved with custom strength");
+    check(legacy.applyTheme("Existing theme"), "old partial theme remains applicable");
+    check(legacy.config().value("artwork_background") == QJsonValue(false), "old theme preserves artwork preference");
+    check(legacy.config().value("artwork_background_strength") == QJsonValue(0.375), "old theme preserves artwork strength");
+    customized = legacy.config();
+    check(legacy.saveProfile("Artwork profile"), "artwork profile saved");
+    check(legacy.saveTheme("Artwork theme"), "artwork theme saved");
+    const QString exported = QDir(directory).filePath("artwork-export.json");
+    check(legacy.exportFile(exported), "artwork settings exported");
+    ConfigStore imported(QDir(directory).filePath("artwork-import.json"));
+    check(imported.importFile(exported), "artwork settings imported");
+    check(imported.config() == customized, "artwork configuration import roundtrip");
+    check(imported.loadProfile("Artwork profile"), "imported artwork profile loaded");
+    check(imported.config() == customized, "artwork profile import roundtrip");
+    auto altered = ConfigStore::defaults();
+    altered.insert("compact_width", 224);
+    check(imported.update(altered), "artwork theme setup");
+    check(imported.applyTheme("Artwork theme"), "imported artwork theme applied");
+    check(imported.config().value("artwork_background") == QJsonValue(false), "theme restores disabled artwork background");
+    check(imported.config().value("artwork_background_strength") == QJsonValue(0.375), "theme restores artwork strength");
+    check(imported.config().value("compact_width").toInt() == 224, "artwork theme preserves docking dimensions");
+    ConfigStore reloaded(imported.path());
+    check(reloaded.config() == imported.config(), "artwork options persist after reload");
+    check(reloaded.applyTheme("Lunar"), "built-in theme applies with artwork fields");
+    check(reloaded.config().value("artwork_background") == QJsonValue(true), "Lunar restores default artwork toggle");
+    check(reloaded.config().value("artwork_background_strength") == QJsonValue(0.75), "Lunar restores default artwork strength");
+}
 }
 
 int main(int argc, char** argv)
@@ -275,6 +345,7 @@ int main(int argc, char** argv)
     check(!ConfigStore(path).themes().contains("Custom"), "theme deletion persisted");
     invalidValues();
     compactConfiguration(temporary.path());
+    artworkConfiguration(temporary.path());
     qInfo() << "Configuration checks completed. Failures:" << failures;
     return failures == 0 ? 0 : 1;
 }

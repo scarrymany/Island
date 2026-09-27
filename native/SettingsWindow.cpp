@@ -458,6 +458,9 @@ void SettingsWindow::buildAppearance()
     auto* surface = addGroup(page, QStringLiteral("Фон и цвета"));
     addNumber(surface, QStringLiteral("Непрозрачность"), "opacity", {}, true);
     addToggle(surface, QStringLiteral("Размывать фон за островком"), "blur");
+    addToggle(surface, QStringLiteral("Фон из обложки"), "artwork_background");
+    addNumber(surface, QStringLiteral("Выраженность обложки"), "artwork_background_strength", {}, true);
+    surface->addRow(description(QStringLiteral("Цвета сильно размытой обложки окрашивают фон островка. Если обложки нет, используются выбранные ниже цвета.")));
     addColor(surface, QStringLiteral("Основной фон"), "background");
     addToggle(surface, QStringLiteral("Градиент"), "gradient_enabled");
     addColor(surface, QStringLiteral("Второй цвет градиента"), "gradient_color");
@@ -866,6 +869,7 @@ void SettingsWindow::refresh()
     monitorY_->setEnabled(free);
     controls_.value("offset_y")->setEnabled(!free);
     controls_.value("gradient_color")->setEnabled(config.value("gradient_enabled").toBool());
+    controls_.value("artwork_background_strength")->setEnabled(config.value("artwork_background").toBool());
     controls_.value("idle_collapse_seconds")->setEnabled(config.value("idle_collapse").toBool());
     const bool borderEnabled = config.value("border_width").toDouble() > 0;
     controls_.value("border_color")->setEnabled(borderEnabled);
