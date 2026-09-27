@@ -33,3 +33,9 @@ QIcon AppAssets::icon() {
     initializeResources();
     return QIcon(QStringLiteral(":/island/icon.ico"));
 }
+
+QIcon AppAssets::githubIcon(bool darkBackground) {
+    initializeResources();
+    return QIcon(darkBackground ? QStringLiteral(":/island/github/white.png")
+                               : QStringLiteral(":/island/github/black.png"));
+}

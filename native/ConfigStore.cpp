@@ -1,4 +1,5 @@
 #include "ConfigStore.h"
+#include "AppInfo.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -199,7 +200,7 @@ QJsonObject ConfigStore::defaults()
         {"source_id", ""}, {"settings_background", "#0A0A0A"}, {"settings_accent", "#FFFFFF"},
         {"settings_text", "#D4D4D4"}, {"settings_font_size", 10}, {"settings_opacity", 0.94},
         {"settings_animations", true}, {"settings_animation_duration", 200}, {"settings_font_family", "Inter"},
-        {"settings_blur", true}, {"update_repository", "scarrymany/Island"}, {"check_updates", true}
+        {"settings_blur", true}, {"update_repository", QString::fromLatin1(AppInfo::Repository)}, {"check_updates", true}
     };
 }
 
@@ -236,6 +237,8 @@ bool ConfigStore::validate(QJsonObject& config, QString* error)
             if (key == "update_repository" && !value.toString().isEmpty()
                 && !repositoryPattern.match(value.toString()).hasMatch())
                 return fail(error, QStringLiteral("Репозиторий указывается в формате owner/repository"));
+            if (key == "update_repository")
+                value = QString::fromLatin1(AppInfo::Repository);
         } else if (key == "layout" || key == "anchor") {
             const QStringList choices = key == "layout" ? QStringList{"island", "stacked", "custom"}
                                                         : QStringList{"top_center", "free"};

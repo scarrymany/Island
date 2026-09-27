@@ -12,6 +12,8 @@ Qt DLLs remain separate and replaceable. Island does not restrict reverse engine
 
 Windows SDK and Microsoft Visual C++ runtime components are provided under Microsoft's respective licenses.
 
+The GitHub Invertocat marks in `resources/github/` are the unmodified black and white PNG assets from the [GitHub brand toolkit](https://brand.github.com/foundations/logo), used to identify the link to this public project's repository. GitHub and its marks are trademarks of GitHub, Inc.
+
 The bundled Inter variable font is copyright 2020 The Inter Project Authors and distributed under the SIL Open Font License 1.1. This is the unmodified Inter 4.1 Google Fonts build with Cyrillic, optical sizing, and weights 100-900. The complete copyright notice and license are included in `licenses/Inter-OFL.txt`.
 
 - Font source: https://github.com/google/fonts/tree/0b58fb370093f9a9f4ff785d94405710b79de67c/ofl/inter

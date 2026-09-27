@@ -6,4 +6,5 @@
 namespace AppAssets {
 QString settingsFontFamily();
 QIcon icon();
+QIcon githubIcon(bool darkBackground);
 }

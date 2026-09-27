@@ -13,6 +13,7 @@ class QDoubleSpinBox;
 class QHideEvent;
 class QSlider;
 class SettingsNavigationDelegate;
+class SettingsChoicePopup;
 
 class SettingsNavigation final : public QListWidget {
     Q_OBJECT
@@ -92,7 +93,12 @@ class SettingsChoice final : public QComboBox {
 
 public:
     explicit SettingsChoice(QWidget* parent = nullptr);
+    ~SettingsChoice() override;
+    void setMotion(bool enabled, int durationMs, double refreshRate);
     void setColors(const QColor& accent, const QColor& track, const QColor& text);
+    void showPopup() override;
+    void hidePopup() override;
+    void setModel(QAbstractItemModel* model) override;
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
 
@@ -101,6 +107,8 @@ protected:
     bool event(QEvent* event) override;
 
 private:
+    SettingsChoicePopup* popup_ = nullptr;
+    bool keyboardFocus_ = false;
     QColor accent_{"#F4F4F5"};
     QColor track_{"#18181B"};
     QColor text_{"#F4F4F5"};
@@ -144,7 +152,12 @@ class SettingsFontChoice final : public QFontComboBox {
 
 public:
     explicit SettingsFontChoice(QWidget* parent = nullptr);
+    ~SettingsFontChoice() override;
+    void setMotion(bool enabled, int durationMs, double refreshRate);
     void setColors(const QColor& accent, const QColor& track, const QColor& text);
+    void showPopup() override;
+    void hidePopup() override;
+    void setModel(QAbstractItemModel* model) override;
     [[nodiscard]] QSize sizeHint() const override;
     [[nodiscard]] QSize minimumSizeHint() const override;
 
@@ -153,6 +166,8 @@ protected:
     bool event(QEvent* event) override;
 
 private:
+    SettingsChoicePopup* popup_ = nullptr;
+    bool keyboardFocus_ = false;
     QColor accent_{"#F4F4F5"};
     QColor track_{"#18181B"};
     QColor text_{"#F4F4F5"};

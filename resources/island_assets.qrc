@@ -1,6 +1,8 @@
 <RCC>
     <qresource prefix="/island">
         <file alias="icon.ico">island.ico</file>
+        <file alias="github/black.png">github/black.png</file>
+        <file alias="github/white.png">github/white.png</file>
         <file alias="fonts/Inter.ttf">fonts/Inter.ttf</file>
         <file alias="fonts/Manrope.ttf">fonts/Manrope.ttf</file>
     </qresource>

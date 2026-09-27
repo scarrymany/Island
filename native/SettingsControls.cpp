@@ -1,12 +1,21 @@
 #include "SettingsControls.h"
 
 #include <QAbstractItemView>
+#include <QAccessible>
+#include <QAccessibleWidget>
+#include <QApplication>
 #include <QDoubleSpinBox>
 #include <QEvent>
 #include <QFocusEvent>
 #include <QHBoxLayout>
 #include <QHideEvent>
+#include <QKeyEvent>
+#include <QListView>
+#include <QMouseEvent>
 #include <QPainter>
+#include <QPointer>
+#include <QScreen>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
 #include <QStyledItemDelegate>
@@ -24,8 +33,16 @@ constexpr double SwitchWidth = 40;
 constexpr double SwitchHeight = 22;
 constexpr double SwitchInset = 3;
 constexpr double SwitchMargin = 4;
+constexpr int PopupPadding = 6;
+constexpr int PopupGap = 6;
+constexpr int PopupScreenMargin = 8;
+constexpr int PopupMaximumRows = 10;
+constexpr int PopupTravel = 6;
 const QString ThumbTrack = QStringLiteral("thumb");
 const QString NavigationTrack = QStringLiteral("navigation");
+const QString PopupTrack = QStringLiteral("popup");
+
+void installChoiceAccessibility();
 
 QColor mix(const QColor& from, const QColor& to, double progress)
 {
@@ -115,6 +132,7 @@ private:
 
 void configureChoice(QComboBox* choice)
 {
+    installChoiceAccessibility();
     choice->setAttribute(Qt::WA_Hover);
     choice->setFocusPolicy(Qt::StrongFocus);
     choice->setMinimumHeight(ControlHeight);
@@ -136,22 +154,20 @@ void styleChoice(QComboBox* choice, const QColor& accent, const QColor& track, c
     choice->setStyleSheet(QStringLiteral(
         "QComboBox::drop-down { border: none; width: 32px; }"
         "QComboBox::down-arrow { image: none; }"
-        "QComboBox QLineEdit { background: transparent; border: none; }"
-        "QComboBox QAbstractItemView { background: %1; color: %2; border: 1px solid %3;"
-        "selection-background-color: %4; selection-color: %2; outline: 0; padding: 4px; }")
-        .arg(track.name(), text.name(), mix(track, text, 0.12).name(), mix(track, accent, 0.18).name()));
+        "QComboBox QLineEdit { background: transparent; border: none; }"));
     choice->update();
 }
 
-void paintChoice(QComboBox* choice, const QColor& accent, const QColor& track, const QColor& text)
+void paintChoice(QComboBox* choice, const QColor& accent, const QColor& track, const QColor& text,
+                 bool keyboardFocus, bool popupVisible)
 {
     QPainter painter(choice);
     painter.setRenderHint(QPainter::Antialiasing);
     const bool enabled = choice->isEnabled();
     const QColor foreground = enabled ? text : mix(track, text, 0.4);
-    const QColor surface = enabled && choice->underMouse() ? mix(track, text, 0.035) : track;
-    const bool focused = choice->hasFocus();
-    painter.setPen(QPen(focused ? mix(track, accent, 0.7) : mix(track, text, 0.09), 1));
+    const QColor surface = enabled && (choice->underMouse() || popupVisible) ? mix(track, text, 0.035) : track;
+    const bool focused = keyboardFocus && choice->hasFocus();
+    painter.setPen(QPen(focused ? mix(track, accent, 0.7) : mix(track, text, popupVisible ? 0.2 : 0.09), 1));
     painter.setBrush(surface);
     painter.drawRoundedRect(QRectF(choice->rect()).adjusted(0.5, 0.5, -0.5, -0.5), CornerRadius, CornerRadius);
 
@@ -160,7 +176,9 @@ void paintChoice(QComboBox* choice, const QColor& accent, const QColor& track, c
     const double arrowY = choice->height() / 2.0;
     painter.setPen(QPen(foreground, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     QPolygonF chevron;
-    chevron << QPointF(arrowX - 4, arrowY - 2) << QPointF(arrowX, arrowY + 2) << QPointF(arrowX + 4, arrowY - 2);
+    const double direction = popupVisible ? -1.0 : 1.0;
+    chevron << QPointF(arrowX - 4, arrowY - 2 * direction) << QPointF(arrowX, arrowY + 2 * direction)
+            << QPointF(arrowX + 4, arrowY - 2 * direction);
     painter.drawPolyline(chevron);
 
     if (choice->isEditable())
@@ -182,6 +200,512 @@ void paintChoice(QComboBox* choice, const QColor& accent, const QColor& track, c
     const QString value = choice->currentIndex() < 0 ? choice->placeholderText() : choice->currentText();
     const QString elided = choice->fontMetrics().elidedText(value, Qt::ElideRight, std::max(0, content.width()));
     painter.drawText(content, Qt::AlignVCenter | (rightToLeft ? Qt::AlignRight : Qt::AlignLeft), elided);
+}
+}
+
+namespace {
+class ChoiceClosingFrame final : public QWidget {
+public:
+    explicit ChoiceClosingFrame(QWidget* parent)
+        : QWidget(parent, Qt::ToolTip | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint
+                  | Qt::WindowTransparentForInput | Qt::WindowDoesNotAcceptFocus)
+    {
+        setObjectName(QStringLiteral("settingsChoiceClosingFrame"));
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+    QPixmap image;
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.drawPixmap(0, 0, image);
+    }
+};
+
+class ChoiceItemDelegate final : public QStyledItemDelegate {
+public:
+    explicit ChoiceItemDelegate(QComboBox* choice, QObject* parent)
+        : QStyledItemDelegate(parent), choice_(choice) {}
+
+    QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex&) const override
+    {
+        return {100, std::max(32, choice_->fontMetrics().height() + 14)};
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override
+    {
+        const bool enabled = index.flags().testFlag(Qt::ItemIsEnabled);
+        const bool selected = index.row() == choice_->currentIndex();
+        const bool active = option.state.testFlag(QStyle::State_Selected)
+            || option.state.testFlag(QStyle::State_MouseOver);
+        const QColor track = option.palette.color(QPalette::Base);
+        const QColor foreground = option.palette.color(QPalette::Text);
+        const QRectF row = QRectF(option.rect).adjusted(0, 1, 0, -1);
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing);
+        painter->setPen(Qt::NoPen);
+        if (active && enabled) {
+            painter->setBrush(option.palette.color(QPalette::Highlight));
+            painter->drawRoundedRect(row, 5, 5);
+        } else if (selected) {
+            painter->setBrush(mix(track, foreground, 0.055));
+            painter->drawRoundedRect(row, 5, 5);
+        }
+        if (!enabled) painter->setOpacity(0.4);
+        const bool rtl = option.direction == Qt::RightToLeft;
+        QRect content = option.rect.adjusted(rtl ? 28 : 9, 0, rtl ? -9 : -28, 0);
+        const QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+        if (!icon.isNull()) {
+            const QSize size = choice_->iconSize().boundedTo(QSize(18, 18));
+            const int x = rtl ? content.right() - size.width() + 1 : content.left();
+            icon.paint(painter, QRect(x, content.center().y() - size.height() / 2, size.width(), size.height()));
+            if (rtl) content.adjust(0, 0, -size.width() - 8, 0);
+            else content.adjust(size.width() + 8, 0, 0, 0);
+        }
+        painter->setFont(choice_->font());
+        painter->setPen(foreground);
+        painter->drawText(content, Qt::AlignVCenter | Qt::TextSingleLine | (rtl ? Qt::AlignRight : Qt::AlignLeft),
+            choice_->fontMetrics().elidedText(index.data(Qt::DisplayRole).toString(), Qt::ElideRight,
+                                             std::max(0, content.width())));
+        if (selected) {
+            const double x = rtl ? option.rect.left() + 13 : option.rect.right() - 13;
+            const double y = option.rect.center().y();
+            painter->setPen(QPen(foreground, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->drawPolyline(QPolygonF{QPointF(x - 3, y), QPointF(x - 1, y + 2), QPointF(x + 4, y - 3)});
+        }
+        painter->restore();
+    }
+
+private:
+    QComboBox* choice_;
+};
+}
+
+class SettingsChoicePopup final : public QWidget {
+public:
+    explicit SettingsChoicePopup(QComboBox* choice)
+        : QWidget(choice, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint),
+          choice_(choice), animation_(this), closingFrame_(new ChoiceClosingFrame(choice))
+    {
+        setObjectName(QStringLiteral("settingsChoicePopup"));
+        setAttribute(Qt::WA_TranslucentBackground);
+        setFocusPolicy(Qt::NoFocus);
+        list_ = new QListView(this);
+        list_->setObjectName(QStringLiteral("settingsChoiceList"));
+        list_->setItemDelegate(new ChoiceItemDelegate(choice, list_));
+        list_->setFrameShape(QFrame::NoFrame);
+        list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        list_->setSelectionMode(QAbstractItemView::SingleSelection);
+        list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        list_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+        list_->setUniformItemSizes(true);
+        list_->setMouseTracking(true);
+        list_->installEventFilter(this);
+        list_->viewport()->installEventFilter(this);
+        connect(list_, &QListView::clicked, this, [this](const QModelIndex& index) { accept(index); });
+        connect(list_, &QListView::entered, this, [this](const QModelIndex& index) {
+            if (selectable(index)) list_->setCurrentIndex(index);
+        });
+        connect(choice_, &QComboBox::currentIndexChanged, this, [this] {
+            if (isVisible()) closePopup(false);
+        });
+        connect(qApp, &QGuiApplication::fontDatabaseChanged, this, [this] { closePopup(false); });
+    }
+
+    ~SettingsChoicePopup() override
+    {
+        animation_.stopAll();
+        delete closingFrame_;
+    }
+
+    void setMotion(bool enabled, int durationMs, double refreshRate)
+    {
+        motionEnabled_ = enabled;
+        durationMs_ = std::clamp(durationMs, 0, 10000);
+        animation_.setRefreshRate(refreshRate);
+        if (!enabled || durationMs_ == 0) {
+            animation_.stopAll();
+            closingFrame_->hide();
+            if (isVisible()) setProgress(1);
+        }
+    }
+
+    void setColors(const QColor& accent, const QColor& track, const QColor& text)
+    {
+        track_ = mix(track, text, 0.025);
+        border_ = mix(track, text, 0.14);
+        QPalette colors = choice_->palette();
+        colors.setColor(QPalette::Base, track_);
+        colors.setColor(QPalette::Text, text);
+        colors.setColor(QPalette::Highlight, mix(track_, accent, 0.13));
+        colors.setColor(QPalette::HighlightedText, text);
+        list_->setPalette(colors);
+        list_->setStyleSheet(QStringLiteral(
+            "QListView { background: transparent; border: none; outline: 0; padding: 0; }"
+            "QScrollBar:vertical { background: transparent; width: 7px; margin: 2px 0; }"
+            "QScrollBar::handle:vertical { background: %1; border-radius: 3px; min-height: 28px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
+            .arg(mix(track, text, 0.2).name()));
+        update();
+    }
+
+    void openPopup()
+    {
+        if (!choice_->isVisible() || !choice_->isEnabled() || choice_->count() == 0) return;
+        if (isVisible()) return;
+        if (active_ && active_ != this) active_->closePopup(false);
+        if (closing_ && closing_ != this) closing_->closePopup(false);
+        active_ = this;
+        animation_.stopAll();
+        closingFrame_->hide();
+        if (closing_ == this) closing_.clear();
+        list_->setFont(choice_->font());
+        list_->setLayoutDirection(choice_->layoutDirection());
+        list_->setAccessibleName(choice_->accessibleName());
+        list_->setModel(choice_->model());
+        list_->setModelColumn(choice_->modelColumn());
+        list_->setRootIndex(choice_->rootModelIndex());
+        list_->setEnabled(true);
+        const QModelIndex current = choice_->model()->index(choice_->currentIndex(), choice_->modelColumn(), choice_->rootModelIndex());
+        list_->setCurrentIndex(current);
+        connections_.append(connect(list_->selectionModel(), &QItemSelectionModel::currentChanged, this,
+            [this](const QModelIndex& index) {
+                if (!selectable(index)) return;
+                QPointer<QComboBox> choice = choice_;
+                const QString text = index.data(Qt::DisplayRole).toString();
+                emit choice->highlighted(index.row());
+                if (choice) emit choice->textHighlighted(text);
+            }));
+        auto* model = choice_->model();
+        connections_.append(connect(model, &QObject::destroyed, this, [this] { closePopup(false); }));
+        connections_.append(connect(model, &QAbstractItemModel::modelAboutToBeReset, this, [this] { closePopup(false); }));
+        connections_.append(connect(model, &QAbstractItemModel::rowsAboutToBeRemoved, this, [this] { closePopup(false); }));
+        connections_.append(connect(model, &QAbstractItemModel::rowsAboutToBeInserted, this, [this] { closePopup(false); }));
+        connections_.append(connect(model, &QAbstractItemModel::layoutAboutToBeChanged, this, [this] { closePopup(false); }));
+        observedWindow_ = choice_->window();
+        observedWindow_->installEventFilter(this);
+        placePopup();
+        progress_ = motionEnabled_ && durationMs_ > 0 ? 0 : 1;
+        setProgress(progress_);
+        show();
+        list_->doItemsLayout();
+        list_->scrollTo(current, QAbstractItemView::PositionAtCenter);
+        const int rowHeight = list_->visualRect(current).height();
+        if (rowHeight > 0) {
+            auto* scroll = list_->verticalScrollBar();
+            scroll->setValue(scroll->value() - scroll->value() % rowHeight);
+        }
+        list_->setFocus(Qt::PopupFocusReason);
+        choice_->update();
+        QAccessibleEvent opened(list_, QAccessible::PopupMenuStart);
+        QAccessible::updateAccessibility(&opened);
+        notifyExpandedState();
+        if (progress_ < 1) {
+            animation_.start(PopupTrack, progress_, 1, std::chrono::milliseconds(durationMs_),
+                             [this](double value) { setProgress(value); });
+        }
+    }
+
+    void closePopup(bool animate)
+    {
+        suppressCloseAnimation_ = !animate;
+        if (isVisible()) hide();
+        if (!animate) {
+            animation_.stopAll();
+            closingFrame_->hide();
+            if (closing_ == this) closing_.clear();
+        }
+        suppressCloseAnimation_ = false;
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        const QRect field(choice_->mapToGlobal(QPoint(0, 0)), choice_->size());
+        setAttribute(Qt::WA_NoMouseReplay, field.contains(event->globalPosition().toPoint()));
+        QWidget::mousePressEvent(event);
+    }
+
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(QPen(border_, 1));
+        painter.setBrush(track_);
+        painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), CornerRadius, CornerRadius);
+    }
+
+    void resizeEvent(QResizeEvent* event) override
+    {
+        QWidget::resizeEvent(event);
+        list_->setGeometry(rect().adjusted(PopupPadding, PopupPadding, -PopupPadding, -PopupPadding));
+    }
+
+    void hideEvent(QHideEvent* event) override
+    {
+        animation_.stopAll();
+        for (const auto& connection : connections_) disconnect(connection);
+        connections_.clear();
+        if (observedWindow_) observedWindow_->removeEventFilter(this);
+        observedWindow_.clear();
+        if (active_ == this) active_.clear();
+        choice_->QComboBox::hidePopup();
+        choice_->update();
+        QAccessibleEvent closed(list_, QAccessible::PopupMenuEnd);
+        QAccessible::updateAccessibility(&closed);
+        notifyExpandedState();
+        if (!suppressCloseAnimation_ && motionEnabled_ && durationMs_ > 0 && choice_->isVisible() && progress_ > 0) {
+            // Release the popup grab first, then fade a snapshot that cannot intercept input.
+            closing_ = this;
+            closingFrame_->image = grab();
+            closingFrame_->setGeometry(geometry());
+            closingFrame_->setWindowOpacity(progress_);
+            closingFrame_->show();
+            const QRect origin = geometry();
+            const double opacity = progress_;
+            animation_.start(PopupTrack, 0, 1, std::chrono::milliseconds(std::max(1, durationMs_ * 2 / 3)),
+                [this, origin, opacity](double value) {
+                    closingFrame_->setWindowOpacity(opacity * (1 - value));
+                    closingFrame_->move(origin.topLeft() + QPoint(0, qRound((above_ ? PopupTravel : -PopupTravel) * value)));
+                }, [this] {
+                    closingFrame_->hide();
+                    closingFrame_->image = {};
+                    if (closing_ == this) closing_.clear();
+                });
+        }
+        QWidget::hideEvent(event);
+    }
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (watched == observedWindow_ && (event->type() == QEvent::Hide || event->type() == QEvent::Close
+            || event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::WindowStateChange)) {
+            closePopup(false);
+        }
+        if (watched == list_ && event->type() == QEvent::KeyPress) {
+            const auto* key = static_cast<QKeyEvent*>(event);
+            if (key->key() == Qt::Key_Escape || key->key() == Qt::Key_F4
+                || (key->key() == Qt::Key_Up && key->modifiers().testFlag(Qt::AltModifier))) {
+                closePopup(true);
+                return true;
+            }
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter || key->key() == Qt::Key_Space) {
+                accept(list_->currentIndex());
+                return true;
+            }
+            if (key->key() == Qt::Key_Tab || key->key() == Qt::Key_Backtab) {
+                closePopup(true);
+                QKeyEvent next(QEvent::KeyPress, key->key(), key->modifiers());
+                QCoreApplication::sendEvent(choice_, &next);
+                return true;
+            }
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    void notifyExpandedState()
+    {
+        QAccessible::State changes;
+        changes.expanded = true;
+        changes.collapsed = true;
+        QAccessibleStateChangeEvent event(choice_, changes);
+        QAccessible::updateAccessibility(&event);
+    }
+
+    static bool selectable(const QModelIndex& index)
+    {
+        return index.isValid() && index.flags().testFlag(Qt::ItemIsEnabled) && index.flags().testFlag(Qt::ItemIsSelectable);
+    }
+
+    void accept(const QModelIndex& index)
+    {
+        if (!selectable(index) || !isVisible()) return;
+        QPointer<QComboBox> choice = choice_;
+        const int row = index.row();
+        const QString text = index.data(Qt::DisplayRole).toString();
+        closePopup(true);
+        choice->setCurrentIndex(row);
+        if (!choice) return;
+        emit choice->activated(row);
+        if (choice) emit choice->textActivated(text);
+    }
+
+    void placePopup()
+    {
+        const QRect field(choice_->mapToGlobal(QPoint(0, 0)), choice_->size());
+        QScreen* screen = QGuiApplication::screenAt(field.center());
+        if (!screen) screen = choice_->screen();
+        const QRect available = screen->availableGeometry().adjusted(PopupScreenMargin, PopupScreenMargin,
+                                                                    -PopupScreenMargin, -PopupScreenMargin);
+        const int rowHeight = std::max(32, choice_->fontMetrics().height() + 14);
+        const int rows = std::min({choice_->count(), std::max(1, choice_->maxVisibleItems()), PopupMaximumRows});
+        const int desiredHeight = rows * rowHeight + PopupPadding * 2;
+        const int below = std::max(0, available.bottom() - field.bottom() - PopupGap);
+        const int above = std::max(0, field.top() - PopupGap - available.top());
+        above_ = below < desiredHeight && above > below;
+        const int height = std::max(1, std::min(desiredHeight, above_ ? above : below));
+        const int width = std::min(choice_->width(), available.width());
+        const int x = std::clamp(field.left(), available.left(), available.right() - width + 1);
+        const int y = above_ ? field.top() - PopupGap - height : field.bottom() + PopupGap + 1;
+        target_ = QRect(x, std::clamp(y, available.top(), available.bottom() - height + 1), width, height);
+        setGeometry(target_);
+    }
+
+    void setProgress(double value)
+    {
+        progress_ = value;
+        setWindowOpacity(value);
+        move(target_.topLeft() + QPoint(0, qRound((above_ ? PopupTravel : -PopupTravel) * (1 - value))));
+    }
+
+    inline static QPointer<SettingsChoicePopup> active_;
+    inline static QPointer<SettingsChoicePopup> closing_;
+    QComboBox* choice_;
+    AnimationClock animation_;
+    ChoiceClosingFrame* closingFrame_;
+    QListView* list_ = nullptr;
+    QPointer<QWidget> observedWindow_;
+    QList<QMetaObject::Connection> connections_;
+    QRect target_;
+    QColor track_{"#1E1E21"};
+    QColor border_{"#36363A"};
+    bool motionEnabled_ = true;
+    bool suppressCloseAnimation_ = false;
+    bool above_ = false;
+    int durationMs_ = 180;
+    double progress_ = 0;
+};
+
+namespace {
+class AccessibleSettingsPopup final : public QAccessibleWidget {
+public:
+    explicit AccessibleSettingsPopup(QWidget* popup) : QAccessibleWidget(popup, QAccessible::PopupMenu) {}
+    QAccessibleInterface* parent() const override
+    {
+        return QAccessible::queryAccessibleInterface(widget()->parentWidget());
+    }
+};
+
+class AccessibleSettingsChoice final : public QAccessibleWidget {
+public:
+    explicit AccessibleSettingsChoice(QComboBox* choice) : QAccessibleWidget(choice, QAccessible::ComboBox) {}
+
+    QString text(QAccessible::Text type) const override
+    {
+        if (type == QAccessible::Value) return choice()->currentText();
+        return QAccessibleWidget::text(type);
+    }
+
+    QAccessible::State state() const override
+    {
+        auto result = QAccessibleWidget::state();
+        const auto* list = popupList();
+        result.hasPopup = true;
+        result.expandable = true;
+        result.expanded = list && list->isVisible();
+        result.collapsed = !result.expanded;
+        return result;
+    }
+
+    int childCount() const override { return popup() ? 1 : 0; }
+    QAccessibleInterface* child(int index) const override
+    {
+        return index == 0 ? QAccessible::queryAccessibleInterface(popup()) : nullptr;
+    }
+    int indexOfChild(const QAccessibleInterface* candidate) const override
+    {
+        return candidate && candidate->object() == popup() ? 0 : -1;
+    }
+    QAccessibleInterface* childAt(int x, int y) const override
+    {
+        auto* list = child(0);
+        return list && !list->state().invisible && list->rect().contains(x, y) ? list : nullptr;
+    }
+    QAccessibleInterface* focusChild() const override
+    {
+        auto* list = QAccessible::queryAccessibleInterface(popupList());
+        return list && !list->state().invisible ? list : nullptr;
+    }
+
+    QStringList actionNames() const override { return {showMenuAction(), setFocusAction()}; }
+    void doAction(const QString& action) override
+    {
+        if (!choice()->isEnabled()) return;
+        if (action == showMenuAction()) {
+            if (state().expanded) choice()->hidePopup();
+            else choice()->showPopup();
+        } else {
+            QAccessibleWidget::doAction(action);
+        }
+    }
+    QStringList keyBindingsForAction(const QString& action) const override
+    {
+        return action == showMenuAction() ? QStringList{QStringLiteral("Alt+Down"), QStringLiteral("F4")}
+                                         : QAccessibleWidget::keyBindingsForAction(action);
+    }
+
+private:
+    QComboBox* choice() const { return static_cast<QComboBox*>(widget()); }
+    QWidget* popup() const { return widget()->findChild<QWidget*>(QStringLiteral("settingsChoicePopup")); }
+    QListView* popupList() const { return widget()->findChild<QListView*>(QStringLiteral("settingsChoiceList")); }
+};
+
+void installChoiceAccessibility()
+{
+    static const bool installed = [] {
+        QAccessible::installFactory([](const QString& name, QObject* object) -> QAccessibleInterface* {
+            if (name == QStringLiteral("SettingsChoice") || name == QStringLiteral("SettingsFontChoice"))
+                return new AccessibleSettingsChoice(static_cast<QComboBox*>(object));
+            if (name == QStringLiteral("QWidget") && object->objectName() == QStringLiteral("settingsChoicePopup"))
+                return new AccessibleSettingsPopup(static_cast<QWidget*>(object));
+            return nullptr;
+        });
+        return true;
+    }();
+    Q_UNUSED(installed);
+}
+
+bool handleChoiceEvent(QComboBox* choice, SettingsChoicePopup* popup, bool& keyboardFocus, QEvent* event)
+{
+    if (!popup) return false;
+    if (event->type() == QEvent::FocusIn) {
+        const auto reason = static_cast<QFocusEvent*>(event)->reason();
+        if (reason != Qt::PopupFocusReason)
+            keyboardFocus = reason == Qt::TabFocusReason || reason == Qt::BacktabFocusReason || reason == Qt::ShortcutFocusReason;
+    } else if (event->type() == QEvent::FocusOut) {
+        if (static_cast<QFocusEvent*>(event)->reason() != Qt::PopupFocusReason) keyboardFocus = false;
+    } else if (event->type() == QEvent::MouseButtonPress) {
+        keyboardFocus = false;
+        const auto* mouse = static_cast<QMouseEvent*>(event);
+        if (choice->isEnabled() && mouse->button() == Qt::LeftButton) {
+            choice->setFocus(Qt::MouseFocusReason);
+            if (popup->isVisible()) choice->hidePopup();
+            else choice->showPopup();
+            return true;
+        }
+    } else if (event->type() == QEvent::MouseButtonRelease) {
+        if (static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) return true;
+    } else if (event->type() == QEvent::KeyPress) {
+        keyboardFocus = true;
+        const auto* key = static_cast<QKeyEvent*>(event);
+        if (choice->isEnabled() && (key->key() == Qt::Key_F4 || key->key() == Qt::Key_Space
+            || (key->key() == Qt::Key_Down && key->modifiers().testFlag(Qt::AltModifier)))) {
+            if (popup->isVisible()) choice->hidePopup();
+            else choice->showPopup();
+            return true;
+        }
+    } else if (event->type() == QEvent::Hide || event->type() == QEvent::Close || event->type() == QEvent::FontChange
+        || event->type() == QEvent::Move || event->type() == QEvent::Resize || event->type() == QEvent::LayoutDirectionChange
+        || (event->type() == QEvent::EnabledChange && !choice->isEnabled())) {
+        popup->closePopup(false);
+    }
+    return false;
 }
 }
 
@@ -519,7 +1043,19 @@ bool SettingsSlider::event(QEvent* event)
 SettingsChoice::SettingsChoice(QWidget* parent) : QComboBox(parent)
 {
     configureChoice(this);
+    popup_ = new SettingsChoicePopup(this);
     styleChoice(this, accent_, track_, text_);
+    popup_->setColors(accent_, track_, text_);
+}
+
+SettingsChoice::~SettingsChoice() { delete popup_; popup_ = nullptr; }
+void SettingsChoice::setMotion(bool enabled, int durationMs, double refreshRate) { popup_->setMotion(enabled, durationMs, refreshRate); }
+void SettingsChoice::showPopup() { popup_->openPopup(); }
+void SettingsChoice::hidePopup() { popup_->closePopup(true); QComboBox::hidePopup(); }
+void SettingsChoice::setModel(QAbstractItemModel* model)
+{
+    if (popup_) popup_->closePopup(false);
+    QComboBox::setModel(model);
 }
 
 void SettingsChoice::setColors(const QColor& accent, const QColor& track, const QColor& text)
@@ -532,14 +1068,16 @@ void SettingsChoice::setColors(const QColor& accent, const QColor& track, const 
     track_ = track;
     text_ = text;
     styleChoice(this, accent_, track_, text_);
+    popup_->setColors(accent_, track_, text_);
 }
 
 QSize SettingsChoice::sizeHint() const { return QComboBox::sizeHint().expandedTo(QSize(100, ControlHeight)); }
 QSize SettingsChoice::minimumSizeHint() const { return QComboBox::minimumSizeHint().expandedTo(QSize(100, ControlHeight)); }
-void SettingsChoice::paintEvent(QPaintEvent*) { paintChoice(this, accent_, track_, text_); }
+void SettingsChoice::paintEvent(QPaintEvent*) { paintChoice(this, accent_, track_, text_, keyboardFocus_, popup_->isVisible()); }
 
 bool SettingsChoice::event(QEvent* event)
 {
+    if (handleChoiceEvent(this, popup_, keyboardFocus_, event)) { update(); return true; }
     const bool result = QComboBox::event(event);
     if (visualEvent(event->type()))
         update();
@@ -549,7 +1087,20 @@ bool SettingsChoice::event(QEvent* event)
 SettingsFontChoice::SettingsFontChoice(QWidget* parent) : QFontComboBox(parent)
 {
     configureChoice(this);
+    setEditable(false);
+    popup_ = new SettingsChoicePopup(this);
     styleChoice(this, accent_, track_, text_);
+    popup_->setColors(accent_, track_, text_);
+}
+
+SettingsFontChoice::~SettingsFontChoice() { delete popup_; popup_ = nullptr; }
+void SettingsFontChoice::setMotion(bool enabled, int durationMs, double refreshRate) { popup_->setMotion(enabled, durationMs, refreshRate); }
+void SettingsFontChoice::showPopup() { popup_->openPopup(); }
+void SettingsFontChoice::hidePopup() { popup_->closePopup(true); QFontComboBox::hidePopup(); }
+void SettingsFontChoice::setModel(QAbstractItemModel* model)
+{
+    if (popup_) popup_->closePopup(false);
+    QFontComboBox::setModel(model);
 }
 
 void SettingsFontChoice::setColors(const QColor& accent, const QColor& track, const QColor& text)
@@ -562,14 +1113,16 @@ void SettingsFontChoice::setColors(const QColor& accent, const QColor& track, co
     track_ = track;
     text_ = text;
     styleChoice(this, accent_, track_, text_);
+    popup_->setColors(accent_, track_, text_);
 }
 
 QSize SettingsFontChoice::sizeHint() const { return QFontComboBox::sizeHint().expandedTo(QSize(100, ControlHeight)); }
 QSize SettingsFontChoice::minimumSizeHint() const { return QFontComboBox::minimumSizeHint().expandedTo(QSize(100, ControlHeight)); }
-void SettingsFontChoice::paintEvent(QPaintEvent*) { paintChoice(this, accent_, track_, text_); }
+void SettingsFontChoice::paintEvent(QPaintEvent*) { paintChoice(this, accent_, track_, text_, keyboardFocus_, popup_->isVisible()); }
 
 bool SettingsFontChoice::event(QEvent* event)
 {
+    if (handleChoiceEvent(this, popup_, keyboardFocus_, event)) { update(); return true; }
     const bool result = QFontComboBox::event(event);
     if (visualEvent(event->type()))
         update();
@@ -584,6 +1137,7 @@ SettingsToggle::SettingsToggle(const QString& text, QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     setAttribute(Qt::WA_Hover);
     setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    setMinimumWidth(static_cast<int>(SwitchWidth + SwitchMargin * 2));
     setMinimumHeight(static_cast<int>(SwitchHeight + SwitchMargin * 2));
 }
 

@@ -81,7 +81,7 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(&sessionVolume_, &SessionVolume::error, this, &Application::setStatus);
     connect(&settings_, &SettingsWindow::checkUpdates, this, [this] {
         settings_.setUpdateState(QStringLiteral("Проверяем GitHub Releases..."), false, true);
-        updates_.check(store_.config()["update_repository"].toString());
+        updates_.check();
     });
     connect(&settings_, &SettingsWindow::updateInstallRequested, this, [this] {
         if (QMessageBox::question(&settings_, QStringLiteral("Обновление SCARP ISLAND"),
@@ -118,7 +118,7 @@ Application::Application(bool demo, bool background, QString configPath, QObject
         media_.start(); volumeTimer_.start();
         if (store_.config()["check_updates"].toBool(true))
             QTimer::singleShot(5000, this, [this] {
-                if (!stopping_) updates_.check(store_.config()["update_repository"].toString());
+                if (!stopping_ && store_.config()["check_updates"].toBool(true)) updates_.check();
             });
     }
     hud_.reveal();
@@ -174,10 +174,6 @@ void Application::refreshProfiles() {
 void Application::applyConfig(const QJsonObject& config) {
     if (stopping_) return;
     QJsonObject effective = config;
-    if (applied_.contains("update_repository") && applied_["update_repository"] != config["update_repository"]) {
-        updates_.cancel();
-        settings_.setUpdateState(QStringLiteral("Репозиторий изменён. Проверьте наличие обновлений."));
-    }
     if (!demo_) {
         QString error;
         if (applied_["hotkey"] != config["hotkey"] && !windows_.setHotkey(config["hotkey"].toString(), &error)) {

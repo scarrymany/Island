@@ -1,4 +1,5 @@
 #include "Application.h"
+#include "AppInfo.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -32,7 +33,7 @@ void logMessage(QtMsgType type, const QMessageLogContext&, const QString& messag
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName("Island"); app.setOrganizationName("Island"); app.setApplicationVersion("1.0.4");
+    app.setApplicationName("Island"); app.setOrganizationName("Island"); app.setApplicationVersion(AppInfo::Version);
     app.setApplicationDisplayName("SCARP ISLAND");
     app.setQuitOnLastWindowClosed(false);
     QTranslator translator;
@@ -54,7 +55,13 @@ int main(int argc, char* argv[]) {
 
     const bool isolated = parser.isSet("demo") || parser.isSet("smoke-test");
     std::unique_ptr<QTemporaryDir> temporary;
-    if (isolated) temporary = std::make_unique<QTemporaryDir>();
+    if (isolated) {
+        temporary = std::make_unique<QTemporaryDir>();
+        if (!temporary->isValid()) {
+            qCritical("Cannot create an isolated settings directory: %s", qPrintable(temporary->errorString()));
+            return 1;
+        }
+    }
     QLocalServer server;
     std::unique_ptr<QLockFile> lock;
     if (!isolated) {

@@ -8,6 +8,26 @@
 class AssetsTest final : public QObject {
     Q_OBJECT
 private slots:
+    void githubMarksRenderForBothBackgrounds() {
+        for (const bool dark : {false, true}) {
+            const auto image = AppAssets::githubIcon(dark).pixmap(20, 20).toImage();
+            QVERIFY(!image.isNull());
+            QVERIFY(image.width() <= 20 && image.height() <= 20);
+            bool hasOpaquePixel = false;
+            for (int y = 0; y < image.height(); ++y) {
+                for (int x = 0; x < image.width(); ++x) {
+                    const auto color = image.pixelColor(x, y);
+                    if (color.alpha() < 200) continue;
+                    hasOpaquePixel = true;
+                    QCOMPARE(color.red(), dark ? 255 : 0);
+                    QCOMPARE(color.green(), color.red());
+                    QCOMPARE(color.blue(), color.red());
+                }
+            }
+            QVERIFY(hasOpaquePixel);
+        }
+    }
+
     void embeddedFontLoadsWithCyrillic() {
         const auto family = AppAssets::settingsFontFamily();
         QCOMPARE(family, QStringLiteral("Inter"));

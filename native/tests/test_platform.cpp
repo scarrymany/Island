@@ -1,6 +1,7 @@
 #include "UpdateService.h"
 #include "WindowsIntegration.h"
 
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -10,7 +11,10 @@
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include <algorithm>
+#include <cstring>
 #include <limits>
+#include <utility>
 
 namespace {
 class DeferredReply final : public QNetworkReply {
@@ -27,6 +31,32 @@ public:
     bool aborted = false;
 protected:
     qint64 readData(char*, qint64) override { return -1; }
+};
+
+class BufferedReply final : public QNetworkReply {
+public:
+    BufferedReply(QByteArray body, int status, NetworkError error, QObject* parent)
+        : QNetworkReply(parent), body_(std::move(body)) {
+        setAttribute(QNetworkRequest::HttpStatusCodeAttribute, status);
+        open(QIODevice::ReadOnly);
+        if (error != NoError) setError(error, QStringLiteral("Connection timed out"));
+    }
+    void abort() override {
+        setFinished(true);
+        emit finished();
+    }
+    qint64 bytesAvailable() const override { return body_.size() - offset_ + QNetworkReply::bytesAvailable(); }
+protected:
+    qint64 readData(char* destination, qint64 maximum) override {
+        const qint64 count = std::min(maximum, static_cast<qint64>(body_.size()) - offset_);
+        if (count <= 0) return -1;
+        std::memcpy(destination, body_.constData() + offset_, static_cast<size_t>(count));
+        offset_ += count;
+        return count;
+    }
+private:
+    QByteArray body_;
+    qint64 offset_ = 0;
 };
 
 QJsonObject releaseWithInstaller() {
@@ -139,16 +169,8 @@ private slots:
         QCOMPARE(UpdateService::trustedDownloadUrl(QUrl(url)), allowed);
     }
 
-    void repositoryValidation() {
-        QVERIFY(UpdateService::validRepository(QStringLiteral("scarrymany/Island")));
-        QVERIFY(!UpdateService::validRepository(QStringLiteral("https://github.com/scarrymany/Island")));
-        QVERIFY(!UpdateService::validRepository(QStringLiteral("owner/repo?query=1")));
-        QVERIFY(!UpdateService::validRepository(QStringLiteral("owner/repo/extra")));
-    }
-
     void releaseAcceptsVerifiedInstaller() {
         UpdateService service;
-        service.repository_ = QStringLiteral("scarrymany/Island");
         QSignalSpy available(&service, &UpdateService::updateAvailable);
         service.parseRelease(QJsonDocument(releaseWithInstaller()).toJson());
         QCOMPARE(available.count(), 1);
@@ -159,7 +181,6 @@ private slots:
 
     void releaseRejectsMissingDigest() {
         UpdateService service;
-        service.repository_ = QStringLiteral("scarrymany/Island");
         auto release = releaseWithInstaller();
         auto installer = release.value(QStringLiteral("assets")).toArray().first().toObject();
         installer.remove(QStringLiteral("digest"));
@@ -172,7 +193,6 @@ private slots:
 
     void releaseRejectsDifferentRepository() {
         UpdateService service;
-        service.repository_ = QStringLiteral("scarrymany/Island");
         auto release = releaseWithInstaller();
         auto installer = release.value(QStringLiteral("assets")).toArray().first().toObject();
         installer.insert(QStringLiteral("browser_download_url"), QStringLiteral("https://github.com/other/Island/releases/download/v1.2.0/Island-Setup.exe"));
@@ -181,6 +201,137 @@ private slots:
         service.parseRelease(QJsonDocument(release).toJson());
         QCOMPARE(available.count(), 0);
         QVERIFY(service.assetUrl_.isEmpty());
+    }
+
+    void releaseRejectsInvalidMetadata_data() {
+        QTest::addColumn<QByteArray>("payload");
+        QTest::newRow("invalid-json") << QByteArrayLiteral("{broken");
+        QTest::newRow("json-array") << QByteArrayLiteral("[]");
+        for (const QString& flag : {QStringLiteral("draft"), QStringLiteral("prerelease")}) {
+            auto release = releaseWithInstaller();
+            release.insert(flag, true);
+            QTest::newRow(qPrintable(flag)) << QJsonDocument(release).toJson();
+        }
+        auto release = releaseWithInstaller();
+        release.insert(QStringLiteral("tag_name"), QStringLiteral("v999.0.0-beta"));
+        QTest::newRow("unstable-tag") << QJsonDocument(release).toJson();
+        release = releaseWithInstaller();
+        release.insert(QStringLiteral("tag_name"), QStringLiteral("v0.1.0"));
+        QTest::newRow("older-release") << QJsonDocument(release).toJson();
+        release = releaseWithInstaller();
+        release.insert(QStringLiteral("assets"), QJsonArray{});
+        QTest::newRow("missing-installer") << QJsonDocument(release).toJson();
+        const QList<QPair<QString, QJsonValue>> invalidAssetFields{
+            {QStringLiteral("size"), 0}, {QStringLiteral("size"), 1.5},
+            {QStringLiteral("size"), 512LL * 1024 * 1024 + 1},
+            {QStringLiteral("state"), QStringLiteral("new")},
+            {QStringLiteral("digest"), QStringLiteral("sha256:invalid")}
+        };
+        int row = 0;
+        for (const auto& [key, value] : invalidAssetFields) {
+            release = releaseWithInstaller();
+            auto installer = release.value(QStringLiteral("assets")).toArray().first().toObject();
+            installer.insert(key, value);
+            release.insert(QStringLiteral("assets"), QJsonArray{installer});
+            QTest::newRow(qPrintable(QStringLiteral("invalid-asset-%1").arg(++row))) << QJsonDocument(release).toJson();
+        }
+    }
+
+    void releaseRejectsInvalidMetadata() {
+        QFETCH(QByteArray, payload);
+        UpdateService service;
+        QSignalSpy available(&service, &UpdateService::updateAvailable);
+        QSignalSpy status(&service, &UpdateService::statusChanged);
+        service.parseRelease(payload);
+        QCOMPARE(available.count(), 0);
+        QCOMPARE(status.count(), 1);
+        QVERIFY(!status.first().first().toString().isEmpty());
+        QVERIFY(!service.hasUpdate());
+    }
+
+    void releaseRejectsMismatchedAssetPath_data() {
+        QTest::addColumn<QString>("path");
+        QTest::newRow("tag-case") << QStringLiteral("/scarrymany/Island/releases/download/V1.2.0/Island-Setup.exe");
+        QTest::newRow("asset-case") << QStringLiteral("/scarrymany/Island/releases/download/v1.2.0/island-setup.exe");
+        QTest::newRow("different-tag") << QStringLiteral("/scarrymany/Island/releases/download/v1.3.0/Island-Setup.exe");
+    }
+
+    void releaseRejectsMismatchedAssetPath() {
+        QFETCH(QString, path);
+        UpdateService service;
+        auto release = releaseWithInstaller();
+        auto installer = release.value(QStringLiteral("assets")).toArray().first().toObject();
+        installer.insert(QStringLiteral("browser_download_url"), QStringLiteral("https://github.com") + path);
+        release.insert(QStringLiteral("assets"), QJsonArray{installer});
+        QSignalSpy available(&service, &UpdateService::updateAvailable);
+        service.parseRelease(QJsonDocument(release).toJson());
+        QCOMPARE(available.count(), 0);
+        QVERIFY(!service.hasUpdate());
+    }
+
+    void networkFailures_data() {
+        QTest::addColumn<int>("httpStatus");
+        QTest::addColumn<int>("networkError");
+        QTest::addColumn<QString>("message");
+        QTest::newRow("missing-release") << 404 << int(QNetworkReply::ContentNotFoundError) << QStringLiteral("не найден");
+        QTest::newRow("rate-limit") << 429 << int(QNetworkReply::UnknownContentError) << QStringLiteral("ограничил запросы");
+        QTest::newRow("server-error") << 500 << int(QNetworkReply::InternalServerError) << QStringLiteral("HTTP 500");
+        QTest::newRow("timeout") << 0 << int(QNetworkReply::TimeoutError) << QStringLiteral("Connection timed out");
+    }
+
+    void networkFailures() {
+        QFETCH(int, httpStatus);
+        QFETCH(int, networkError);
+        QFETCH(QString, message);
+        UpdateService service;
+        service.operation_ = UpdateService::Operation::Metadata;
+        service.reply_ = new BufferedReply(QByteArrayLiteral("error"), httpStatus,
+            static_cast<QNetworkReply::NetworkError>(networkError), &service);
+        service.deadline_.start(1000);
+        QSignalSpy status(&service, &UpdateService::statusChanged);
+        QSignalSpy available(&service, &UpdateService::updateAvailable);
+        service.requestFinished();
+        QVERIFY(!service.busy());
+        QVERIFY(!service.reply_);
+        QVERIFY(!service.deadline_.isActive());
+        QCOMPARE(available.count(), 0);
+        QCOMPARE(status.count(), 1);
+        QVERIFY2(status.first().first().toString().contains(message), qPrintable(status.first().first().toString()));
+    }
+
+    void damagedDownloadsAreRemoved_data() {
+        QTest::addColumn<QByteArray>("body");
+        QTest::newRow("wrong-digest") << QByteArrayLiteral("tamperdata");
+        QTest::newRow("truncated") << QByteArrayLiteral("valid");
+        QTest::newRow("oversized") << QByteArrayLiteral("valid data with excess bytes");
+    }
+
+    void damagedDownloadsAreRemoved() {
+        QFETCH(QByteArray, body);
+        const QByteArray expected = QByteArrayLiteral("valid data");
+        UpdateService service;
+        service.operation_ = UpdateService::Operation::Download;
+        service.expectedSize_ = expected.size();
+        service.digest_ = QCryptographicHash::hash(expected, QCryptographicHash::Sha256);
+        service.staging_ = std::make_unique<QTemporaryDir>();
+        QVERIFY(service.staging_->isValid());
+        const QString directory = service.staging_->path();
+        service.download_ = std::make_unique<QSaveFile>(service.staging_->filePath(QStringLiteral("installer.exe")));
+        QVERIFY(service.download_->open(QIODevice::WriteOnly));
+        service.reply_ = new BufferedReply(body, 200, QNetworkReply::NoError, &service);
+        connect(service.reply_, &QNetworkReply::finished, &service, &UpdateService::requestFinished);
+        QSignalSpy quit(&service, &UpdateService::readyToQuit);
+        QSignalSpy status(&service, &UpdateService::statusChanged);
+        service.requestFinished();
+        QVERIFY(!service.busy());
+        QVERIFY(!service.reply_);
+        QVERIFY(!service.download_);
+        QVERIFY(!service.staging_);
+        QVERIFY(!QFileInfo::exists(directory));
+        QCOMPARE(quit.count(), 0);
+        QVERIFY(!status.isEmpty());
+        const QString message = status.last().first().toString();
+        QVERIFY2(message.contains(QStringLiteral("SHA-256")) || message.contains(QStringLiteral("размер")), qPrintable(message));
     }
 
     void installWithoutReleaseDoesNotLaunch() {
@@ -193,20 +344,23 @@ private slots:
         QVERIFY(!service.reply_);
     }
 
-    void changingRepositoryInvalidatesPendingRequest() {
+    void checkingWhileBusyPreservesPendingRequest() {
         UpdateService service;
-        service.repository_ = QStringLiteral("scarrymany/Island");
-        service.parseRelease(QJsonDocument(releaseWithInstaller()).toJson());
         service.operation_ = UpdateService::Operation::Metadata;
-        service.check(QString());
-        QVERIFY(service.repository_.isEmpty());
-        QVERIFY(service.assetUrl_.isEmpty());
-        QCOMPARE(service.operation_, UpdateService::Operation::None);
+        auto* pending = new DeferredReply(&service);
+        service.reply_ = pending;
+        service.deadline_.start(1000);
+        QSignalSpy status(&service, &UpdateService::statusChanged);
+        service.check();
+        QVERIFY(service.busy());
+        QVERIFY(!pending->aborted);
+        QCOMPARE(service.reply_.data(), pending);
+        QVERIFY(service.deadline_.isActive());
+        QCOMPARE(status.count(), 1);
     }
 
     void cancelClearsDownloadAndCachedRelease() {
         UpdateService service;
-        service.repository_ = QStringLiteral("scarrymany/Island");
         service.parseRelease(QJsonDocument(releaseWithInstaller()).toJson());
         QVERIFY(service.hasUpdate());
         service.operation_ = UpdateService::Operation::Download;
@@ -245,7 +399,6 @@ private slots:
 
     void cancellationDuringStatusSuppressesLateAvailability() {
         UpdateService service;
-        service.repository_ = QStringLiteral("scarrymany/Island");
         QSignalSpy available(&service, &UpdateService::updateAvailable);
         connect(&service, &UpdateService::statusChanged, &service, &UpdateService::cancel);
         service.parseRelease(QJsonDocument(releaseWithInstaller()).toJson());

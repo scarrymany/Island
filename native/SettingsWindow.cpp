@@ -1,6 +1,7 @@
 #include "SettingsWindow.h"
 #include "ConfigStore.h"
 #include "AppAssets.h"
+#include "AppInfo.h"
 #include "SettingsControls.h"
 #include "Layout.h"
 
@@ -12,6 +13,7 @@
 #include <QFocusEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDesktopServices>
 #include <QFileDialog>
 #include <QFontComboBox>
 #include <QFormLayout>
@@ -45,6 +47,69 @@
 #include <algorithm>
 
 namespace {
+class StatusLabel final : public QLabel {
+public:
+    StatusLabel() {
+        setObjectName("description");
+        setTextFormat(Qt::PlainText);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    }
+
+    QSize sizeHint() const override { return {0, fontMetrics().height()}; }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setFont(font());
+        painter.setPen(palette().color(foregroundRole()));
+        painter.drawText(contentsRect(), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextSingleLine,
+            fontMetrics().elidedText(text(), Qt::ElideRight, contentsRect().width()));
+    }
+};
+
+class ButtonRow final : public QWidget {
+public:
+    explicit ButtonRow(const QList<QPushButton*>& buttons) : buttons_(buttons) {
+        layout_ = new QBoxLayout(QBoxLayout::TopToBottom, this);
+        layout_->setContentsMargins(0, 4, 0, 0);
+        layout_->setSpacing(8);
+        layout_->setSizeConstraint(QLayout::SetNoConstraint);
+        for (auto* button : buttons_) layout_->addWidget(button);
+        layout_->addStretch();
+    }
+
+    QSize minimumSizeHint() const override {
+        auto result = QWidget::minimumSizeHint();
+        int width = 0;
+        for (auto* button : buttons_) width = std::max(width, button->minimumSizeHint().width());
+        result.setWidth(width);
+        return result;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* event) override {
+        updateDirection();
+        QWidget::resizeEvent(event);
+    }
+
+    bool event(QEvent* event) override {
+        if (layout_ && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::StyleChange))
+            updateDirection();
+        return QWidget::event(event);
+    }
+
+private:
+    void updateDirection() {
+        int requiredWidth = std::max(0, static_cast<int>(buttons_.size()) - 1) * layout_->spacing();
+        for (auto* button : buttons_) requiredWidth += button->sizeHint().width();
+        layout_->setDirection(width() >= requiredWidth ? QBoxLayout::LeftToRight : QBoxLayout::TopToBottom);
+    }
+
+    QList<QPushButton*> buttons_;
+    QBoxLayout* layout_ = nullptr;
+};
+
 class CaptionButton final : public QPushButton {
 public:
     CaptionButton() { setFocusPolicy(Qt::TabFocus); }
@@ -105,14 +170,7 @@ QLabel* description(const QString& text)
 
 QWidget* buttonRow(const QList<QPushButton*>& buttons)
 {
-    auto* widget = new QWidget;
-    auto* layout = new QHBoxLayout(widget);
-    layout->setContentsMargins(0, 4, 0, 0);
-    layout->setSpacing(8);
-    for (auto* button : buttons)
-        layout->addWidget(button);
-    layout->addStretch();
-    return widget;
+    return new ButtonRow(buttons);
 }
 
 QString blended(const QColor& foreground, const QColor& background, double amount)
@@ -198,12 +256,14 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     auto* close = new CaptionButton;
     const QList<QPair<QPushButton*, char16_t>> titleButtons = {{minimize, u'\uE921'}, {maximize, u'\uE922'}, {close, u'\uE8BB'}};
     for (const auto& button : titleButtons) {
-        button.first->setObjectName("captionButton");
+        button.first->setProperty("captionButton", true);
         button.first->setFixedSize(42, 32);
         button.first->setIcon(navigationIcon(button.second, QColor("#CACBD7")));
         button.first->setIconSize(QSize(12, 12));
         titleLayout->addWidget(button.first);
     }
+    minimize->setObjectName("windowMinimize");
+    maximize->setObjectName("windowMaximize");
     close->setObjectName("windowClose");
     minimize->setToolTip(QStringLiteral("Свернуть"));
     maximize->setToolTip(QStringLiteral("Развернуть / восстановить"));
@@ -298,7 +358,8 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     footer->setObjectName("footer");
     auto* footerLayout = new QHBoxLayout(footer);
     footerLayout->setContentsMargins(22, 12, 22, 12);
-    status_ = description(QStringLiteral("Готово к воспроизведению"));
+    status_ = new StatusLabel;
+    status_->setText(QStringLiteral("Готово к воспроизведению"));
     status_->setMinimumHeight(20);
     footerLayout->addWidget(status_, 1);
     auto* live = new QLabel(QStringLiteral("Изменения сразу в HUD"));
@@ -317,6 +378,9 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     buildProfiles();
     buildSystem();
     buildUpdates();
+    // AlignTop caps wrapped layouts to sizeHint(); a stretch preserves their full height-for-width.
+    for (auto* scroll : pages_->findChildren<QScrollArea*>())
+        qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->addStretch();
     connect(navigation_, &QListWidget::currentRowChanged, this, [this, titles](int index) {
         if (index < 0 || index >= titles.size())
             return;
@@ -340,7 +404,6 @@ QVBoxLayout* SettingsWindow::addPage(const QString& title, const QString& text)
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 12, 16);
     layout->setSpacing(18);
-    layout->setAlignment(Qt::AlignTop);
     layout->addWidget(description(text));
     auto* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
@@ -708,8 +771,11 @@ void SettingsWindow::buildSystem()
     auto* hotkey = new QKeySequenceEdit;
     hotkey->setAttribute(Qt::WA_StyledBackground);
     hotkey->setObjectName("hotkey");
+    hotkey->setAccessibleName(QStringLiteral("Показать или скрыть HUD"));
     hotkey->setMaximumSequenceLength(1);
     hotkey->setClearButtonEnabled(false);
+    if (auto* editor = hotkey->findChild<QLineEdit*>())
+        editor->setTextMargins(12, 0, 12, 0);
     controls_.insert("hotkey", hotkey);
     connect(hotkey, &QKeySequenceEdit::editingFinished, this, [this, hotkey] {
         put("hotkey", hotkey->keySequence().toString(QKeySequence::PortableText));
@@ -793,17 +859,19 @@ void SettingsWindow::buildUpdates()
 {
     auto* page = addPage(QStringLiteral("Обновления"), QStringLiteral("Проверка новых версий SCARP ISLAND через GitHub Releases."));
     auto* settings = addGroup(page, QStringLiteral("Источник обновлений"));
-    auto* repository = new QLineEdit;
-    repository->setObjectName("update_repository");
-    repository->setMaxLength(140);
-    repository->setPlaceholderText("owner/repository");
-    controls_.insert("update_repository", repository);
-    connect(repository, &QLineEdit::editingFinished, this, [this, repository] {
-        put("update_repository", repository->text().trimmed());
+    auto* repository = new QPushButton(QString::fromLatin1(AppInfo::Repository));
+    repository->setObjectName("projectRepository");
+    repository->setIconSize(QSize(20, 20));
+    repository->setCursor(Qt::PointingHandCursor);
+    repository->setToolTip(QStringLiteral("Открыть SCARP ISLAND на GitHub"));
+    repository->setAccessibleName(repository->toolTip());
+    connect(repository, &QPushButton::clicked, this, [this] {
+        if (!QDesktopServices::openUrl(QUrl(QString::fromLatin1(AppInfo::ProjectUrl))))
+            reportError(QStringLiteral("Не удалось открыть браузер. Адрес проекта: %1").arg(QString::fromLatin1(AppInfo::ProjectUrl)));
     });
-    settings->addRow(QStringLiteral("Репозиторий GitHub"), repository);
+    settings->addRow(QStringLiteral("Проект на GitHub"), repository);
     addToggle(settings, QStringLiteral("Проверять при запуске"), "check_updates");
-    settings->addRow(description(QStringLiteral("Укажите репозиторий, в котором публикуются релизы вашей сборки SCARP ISLAND. Пустое поле отключает проверку обновлений.")));
+    settings->addRow(description(QStringLiteral("Обновления загружаются из официальных релизов SCARP ISLAND. На GitHub доступны история версий и исходный код.")));
     auto* current = addGroup(page, QStringLiteral("Доступная версия"));
     current->addRow(description(QStringLiteral("Установлена: SCARP ISLAND %1").arg(QApplication::applicationVersion())));
     updateStatus_ = description(QStringLiteral("Проверка ещё не выполнялась"));
@@ -844,8 +912,6 @@ bool SettingsWindow::put(const QString& key, const QJsonValue& value)
     }
     if (key == "source_id")
         emit sourceChanged(value.toString());
-    if (key == "update_repository")
-        setUpdateState(QStringLiteral("Источник изменён. Проверьте наличие новой версии."));
     return true;
 }
 
@@ -877,7 +943,7 @@ void SettingsWindow::setUpdateState(const QString& message, bool available, bool
     updateBusy_ = busy;
     updateAvailable_ = available;
     updateStatus_->setText(message);
-    updateCheck_->setEnabled(!busy && !store_->config().value("update_repository").toString().isEmpty());
+    updateCheck_->setEnabled(!busy);
     updateInstall_->setEnabled(available && !busy);
 }
 
@@ -941,7 +1007,7 @@ void SettingsWindow::refresh()
     const bool borderEnabled = config.value("border_width").toDouble() > 0;
     controls_.value("border_color")->setEnabled(borderEnabled);
     controls_.value("border_opacity")->setEnabled(borderEnabled);
-    updateCheck_->setEnabled(!updateBusy_ && !config.value("update_repository").toString().isEmpty());
+    updateCheck_->setEnabled(!updateBusy_);
     updateInstall_->setEnabled(updateAvailable_ && !updateBusy_);
     controls_.value("settings_animation_duration")->setEnabled(config.value("settings_animations").toBool());
     refreshing_ = false;
@@ -1098,7 +1164,12 @@ void SettingsWindow::updateStyle()
     QFont panelFont(config.value("settings_font_family").toString());
     panelFont.setPointSize(fontSize);
     panelFont.setWeight(QFont::DemiBold);
+    QString family = panelFont.family();
+    family.replace('\\', QStringLiteral("\\\\")).replace('"', QStringLiteral("\\\""));
+    family.replace('\n', ' ').replace('\r', ' ');
     if (font() != panelFont) setFont(panelFont);
+    if (auto* repository = findChild<QPushButton*>("projectRepository"))
+        repository->setIcon(AppAssets::githubIcon(background.lightnessF() < 0.5));
     updateMotion();
     for (auto* toggle : findChildren<SettingsToggle*>())
         toggle->setColors(QColor(accent), QColor(hover), foreground);
@@ -1110,12 +1181,13 @@ void SettingsWindow::updateStyle()
         choice->setColors(QColor(accent), QColor(hover), foreground);
     qobject_cast<SettingsNavigation*>(navigation_)->setColors(QColor(accent), QColor(selected), foreground);
     const QString sheet = QStringLiteral(R"(
-        QWidget { color: %1; font-size: %2pt; font-weight: 600; }
+        QWidget { color: %1; font-size: %2pt; font-weight: 600; font-family: "%13"; }
         QWidget#SettingsWindow { background: transparent; }
         QFrame#windowFrame { background: %3; border: 1px solid %4; border-radius: 14px; }
         QWidget#titleBar { background: transparent; border-bottom: 1px solid %4; }
         QLabel#windowCaption { color: %7; font-size: 10pt; }
-        QPushButton#captionButton, QPushButton#windowClose { background: transparent; border: none; border-radius: 5px; padding: 0; }
+        QPushButton[captionButton="true"] { background: transparent; border: none; border-radius: 5px; padding: 0; }
+        QPushButton#projectRepository { text-align: left; padding: 10px 16px; }
         QWidget#content, QWidget#page, QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }
         QFrame#sidebar { background: %12; border-right: 1px solid %4; }
         QFrame#footer { background: transparent; border-top: 1px solid %4; }
@@ -1161,7 +1233,7 @@ void SettingsWindow::updateStyle()
         QToolTip { color: %1; background: %5; border: 1px solid %4; padding: 7px; }
         QDialog, QMessageBox, QInputDialog, QColorDialog { background: %3; }
     )").arg(foreground.name()).arg(fontSize).arg(panelBackground, border, surface).arg(fontSize + 1)
-        .arg(muted, accent, hover, selected, accentText).arg(blended(foreground, background, 0.02));
+        .arg(muted, accent, hover, selected, accentText).arg(blended(foreground, background, 0.02)).arg(family);
     if (styleSheet() != sheet) setStyleSheet(sheet);
 }
 
@@ -1192,6 +1264,10 @@ void SettingsWindow::updateMotion()
     motion_.setRefreshRate(refreshRate);
     for (auto* toggle : findChildren<SettingsToggle*>())
         toggle->setMotion(enabled, duration, refreshRate);
+    for (auto* choice : findChildren<SettingsChoice*>())
+        choice->setMotion(enabled, duration, refreshRate);
+    for (auto* choice : findChildren<SettingsFontChoice*>())
+        choice->setMotion(enabled, duration, refreshRate);
     qobject_cast<SettingsNavigation*>(navigation_)->setMotion(enabled, duration, refreshRate);
     if (!enabled) finishPageAnimation();
 }

@@ -66,6 +66,40 @@ void invalidValues()
     check(valid.value("width").toInt() == 560, "missing fields receive defaults");
 }
 
+void officialUpdateSource(const QString& directory)
+{
+    const QString repository = QStringLiteral("scarrymany/Island");
+    for (const QString& legacy : {QStringLiteral("owner/my-project"), QString{}}) {
+        QJsonObject config{{"update_repository", legacy}, {"width", 720}};
+        check(ConfigStore::validate(config), "legacy update source remains readable");
+        check(config.value("update_repository").toString() == repository, "legacy source migrates to official repository");
+        check(config.value("width").toInt() == 720, "update source migration preserves other settings");
+    }
+    const QString path = QDir(directory).filePath("legacy-update-source.json");
+    const QJsonObject legacy{{"update_repository", "owner/my-project"}, {"width", 720}};
+    writeJson(path, {{"schema", 1}, {"config", legacy},
+        {"profiles", QJsonObject{{"Old source", legacy}}}});
+    ConfigStore store(path);
+    check(store.loadError().isEmpty(), "legacy update source file accepted");
+    check(store.config().value("update_repository").toString() == repository, "loaded source is official");
+    check(store.loadProfile("Old source"), "legacy update source profile accepted");
+    check(store.config().value("update_repository").toString() == repository, "profile cannot restore custom source");
+    const QString exported = QDir(directory).filePath("official-update-source.json");
+    check(store.exportFile(exported), "migrated update source exported");
+    ConfigStore imported(QDir(directory).filePath("imported-update-source.json"));
+    const QString importSource = QDir(directory).filePath("legacy-update-import.json");
+    writeJson(importSource, {{"schema", 1}, {"config", legacy},
+        {"profiles", QJsonObject{{"Old source", legacy}}}});
+    check(imported.importFile(importSource), "legacy update source imported");
+    check(imported.config().value("update_repository").toString() == repository, "imported source is official");
+    const auto saved = QJsonDocument::fromJson(readFile(exported)).object();
+    check(saved.value("config").toObject().value("update_repository").toString() == repository, "exported source is official");
+    check(saved.value("profiles").toObject().value("Old source").toObject().value("update_repository").toString() == repository,
+        "exported profile source is official");
+    check(ConfigStore(imported.path()).config().value("update_repository").toString() == repository,
+        "official source persists after reload");
+}
+
 void compactConfiguration(const QString& directory)
 {
     const QJsonObject expectedDefaults{
@@ -425,6 +459,7 @@ int main(int argc, char** argv)
     check(store.deleteTheme("Custom"), "custom theme removed");
     check(!ConfigStore(path).themes().contains("Custom"), "theme deletion persisted");
     invalidValues();
+    officialUpdateSource(temporary.path());
     compactConfiguration(temporary.path());
     artworkConfiguration(temporary.path());
     settingsAppearanceConfiguration(temporary.path());

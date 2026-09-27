@@ -21,7 +21,7 @@ public:
     explicit UpdateService(QObject* parent = nullptr);
     ~UpdateService() override;
 
-    void check(const QString& repository);
+    void check();
     void downloadAndInstall();
     void cancel();
     bool busy() const;
@@ -38,7 +38,6 @@ private:
 
     static bool isNewerVersion(const QString& remote, const QString& current);
     static bool trustedDownloadUrl(const QUrl& url);
-    static bool validRepository(const QString& repository);
     void startRequest(const QUrl& url);
     void readAvailable();
     void requestFinished();
@@ -54,7 +53,6 @@ private:
     quint64 requestGeneration_ = 0;
     QByteArray metadata_;
     QString failure_;
-    QString repository_;
     QString version_;
     QString assetName_;
     QUrl assetUrl_;

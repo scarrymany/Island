@@ -1,4 +1,5 @@
 #include "UpdateService.h"
+#include "AppInfo.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -26,7 +27,6 @@ constexpr int TransferTimeoutMs = 30000;
 constexpr int MetadataDeadlineMs = 60000;
 constexpr int DownloadDeadlineMs = 15 * 60 * 1000;
 constexpr int MaxRedirects = 5;
-constexpr auto CurrentVersion = "1.0.4";
 constexpr auto InstallerExe = "Island-Setup.exe";
 constexpr auto InstallerMsi = "Island-Setup.msi";
 
@@ -75,7 +75,6 @@ void UpdateService::cancel() {
     operation_ = Operation::None;
     metadata_.clear();
     failure_.clear();
-    repository_.clear();
     version_.clear();
     assetName_.clear();
     assetUrl_.clear();
@@ -95,11 +94,6 @@ bool UpdateService::hasUpdate() const {
     return !assetUrl_.isEmpty() && !version_.isEmpty() && digest_.size() == 32 && expectedSize_ > 0;
 }
 
-bool UpdateService::validRepository(const QString& repository) {
-    static const QRegularExpression pattern(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}$"));
-    return pattern.match(repository).hasMatch();
-}
-
 bool UpdateService::isNewerVersion(const QString& remote, const QString& current) {
     const auto candidate = parsedVersion(remote);
     const auto installed = parsedVersion(current);
@@ -113,28 +107,19 @@ bool UpdateService::trustedDownloadUrl(const QUrl& url) {
         || host == QStringLiteral("objects.githubusercontent.com") || host == QStringLiteral("github-releases.githubusercontent.com");
 }
 
-void UpdateService::check(const QString& repository) {
-    const QString normalized = repository.trimmed();
-    if (busy() && normalized == repository_) {
+void UpdateService::check() {
+    if (busy()) {
         emit statusChanged(QStringLiteral("Дождитесь завершения текущего запроса"));
         return;
     }
     cancel();
-    repository_ = normalized;
-    if (repository_.isEmpty()) {
-        emit statusChanged(QStringLiteral("Для обновлений укажите GitHub-репозиторий в формате владелец/проект"));
-        return;
-    }
-    if (!validRepository(repository_)) {
-        emit statusChanged(QStringLiteral("Неверный репозиторий. Используйте формат владелец/проект"));
-        return;
-    }
     operation_ = Operation::Metadata;
     metadata_.clear();
     failure_.clear();
     received_ = 0;
     deadline_.start(MetadataDeadlineMs);
-    startRequest(QUrl(QStringLiteral("https://api.github.com/repos/%1/releases/latest").arg(repository_)));
+    startRequest(QUrl(QStringLiteral("https://api.github.com/repos/%1/releases/latest")
+        .arg(QString::fromLatin1(AppInfo::Repository))));
     emit statusChanged(QStringLiteral("Проверка обновлений..."));
 }
 
@@ -234,6 +219,8 @@ void UpdateService::requestFinished() {
             emit statusChanged(QStringLiteral("Репозиторий или опубликованный релиз не найден"));
         } else if (status == 403 || status == 429) {
             emit statusChanged(QStringLiteral("GitHub временно ограничил запросы. Повторите позже"));
+        } else if (status > 0 && status != 200) {
+            emit statusChanged(QStringLiteral("Не удалось получить обновление: ошибка HTTP %1").arg(status));
         } else {
             emit statusChanged(QStringLiteral("Не удалось получить обновление: %1").arg(networkMessage));
         }
@@ -281,7 +268,7 @@ void UpdateService::parseRelease(const QByteArray& payload) {
         return;
     }
     QString current = QCoreApplication::applicationVersion();
-    if (parsedVersion(current).isNull()) current = QString::fromLatin1(CurrentVersion);
+    if (parsedVersion(current).isNull()) current = QString::fromLatin1(AppInfo::Version);
     if (!isNewerVersion(tag, current)) {
         emit statusChanged(QStringLiteral("Установлена актуальная версия %1").arg(current));
         return;
@@ -303,10 +290,12 @@ void UpdateService::parseRelease(const QByteArray& payload) {
     }
     const QString name = installer.value(QStringLiteral("name")).toString();
     const QUrl url(installer.value(QStringLiteral("browser_download_url")).toString());
-    const QString expectedPath = QStringLiteral("/%1/releases/download/%2/%3").arg(repository_, tag, name);
+    const QString repositoryPath = QStringLiteral("/%1/").arg(QString::fromLatin1(AppInfo::Repository));
+    const QString releasePath = QStringLiteral("releases/download/%1/%2").arg(tag, name);
+    const QString path = url.path();
     if (!trustedDownloadUrl(url) || url.host() != QStringLiteral("github.com") || url.hasQuery()
-        || url.path().compare(expectedPath, Qt::CaseInsensitive) != 0) {
-        emit statusChanged(QStringLiteral("Установщик ссылается за пределы выбранного GitHub-релиза"));
+        || !path.startsWith(repositoryPath, Qt::CaseInsensitive) || path.mid(repositoryPath.size()) != releasePath) {
+        emit statusChanged(QStringLiteral("Установщик ссылается за пределы официального GitHub-релиза"));
         return;
     }
     const QString digest = installer.value(QStringLiteral("digest")).toString();

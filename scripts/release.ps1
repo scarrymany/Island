@@ -74,7 +74,9 @@ if (!(Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI (gh) is
 if (!$PSCmdlet.ShouldProcess("$repository $Tag", 'Create a release draft, upload packages, verify remote SHA-256 and publish')) { return }
 
 $assets = @($assetNames | ForEach-Object { Join-Path $dist $_ }) + $manifestPath
-& gh release create $Tag @assets --repo $repository --verify-tag --generate-notes --title "SCARP ISLAND $Tag" --draft
+$notes = Join-Path $workspace "docs/releases/$Tag.md"
+$notesArguments = if (Test-Path -LiteralPath $notes -PathType Leaf) { @('--notes-file', $notes) } else { @('--generate-notes') }
+& gh release create $Tag @assets --repo $repository --verify-tag @notesArguments --title "SCARP ISLAND $Tag" --draft
 if ($LASTEXITCODE -ne 0) { throw 'Could not create the release draft. Existing releases are never overwritten.' }
 
 $releaseId = & gh release view $Tag --repo $repository --json databaseId --jq '.databaseId'

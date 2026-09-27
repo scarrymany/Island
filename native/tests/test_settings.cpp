@@ -5,8 +5,10 @@
 
 #include <QGraphicsOpacityEffect>
 #include <QFontInfo>
+#include <QFrame>
 #include <QLabel>
 #include <QKeySequenceEdit>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QSpinBox>
@@ -17,14 +19,62 @@
 class SettingsTest : public QObject {
     Q_OBJECT
 private slots:
+    void longStatusDoesNotTakeSpaceFromSettings() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        auto config = store.config();
+        config["settings_font_size"] = 18;
+        QVERIFY(store.update(config));
+        SettingsWindow settings(&store);
+        settings.resize(820, 520);
+        settings.show();
+        QTest::qWait(40);
+        auto* footer = settings.findChild<QFrame*>("footer");
+        QVERIFY(footer);
+        const int height = footer->height();
+        auto* label = footer->findChild<QLabel*>("description");
+        QVERIFY(label);
+        for (const auto& message : {QStringLiteral("Ошибка подключения к источнику. ").repeated(20),
+                                   QStringLiteral("Ошибка подключения\r\nПодробности\n").repeated(12)}) {
+            settings.setStatus(message);
+            QTest::qWait(40);
+            QCOMPARE(footer->height(), height);
+            QCOMPARE(label->toolTip(), message);
+            QCOMPARE(label->text(), message);
+        }
+    }
+
+    void hotkeyTextHasComfortableInsetsAtEveryTextSize() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        SettingsWindow settings(&store);
+        settings.show();
+        settings.findChild<QListWidget*>("navigation")->setCurrentRow(5);
+        auto* hotkey = settings.findChild<QKeySequenceEdit*>("hotkey");
+        QVERIFY(hotkey);
+        auto* editor = hotkey->findChild<QLineEdit*>();
+        QVERIFY(editor);
+        for (int size : {8, 10, 18}) {
+            auto config = store.config();
+            config["settings_font_size"] = size;
+            QVERIFY(store.update(config));
+            QCoreApplication::processEvents();
+            const int leftInset = editor->mapTo(hotkey, QPoint()).x() + editor->textMargins().left();
+            const int rightInset = hotkey->width() - editor->mapTo(hotkey, QPoint(editor->width(), 0)).x()
+                + editor->textMargins().right();
+            QVERIFY2(leftInset >= 12 && rightInset >= 12, "Shortcut text touches the field edge");
+            QVERIFY(editor->height() >= editor->fontMetrics().height());
+            QCOMPARE(hotkey->keySequence(), QKeySequence("Ctrl+Alt+M"));
+        }
+    }
+
     void captionMouseFocusDoesNotRemainHighlighted() {
         QTemporaryDir temp;
         ConfigStore store(temp.filePath("config.json"));
         SettingsWindow settings(&store);
         settings.show();
-        const auto buttons = settings.findChildren<QPushButton*>("captionButton");
-        QVERIFY(!buttons.isEmpty());
-        auto* minimize = buttons.first();
+        auto* minimize = settings.findChild<QPushButton*>("windowMinimize");
+        QVERIFY(minimize);
         settings.findChild<QListWidget*>("navigation")->setFocus();
         minimize->setFocus(Qt::MouseFocusReason);
         QTest::qWait(20);

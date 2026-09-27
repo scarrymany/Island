@@ -47,6 +47,22 @@ jobs:
       - name: Build, test and package
         run: ./scripts/build.ps1 -QtPath "$env:RUNNER_TEMP/Qt/6.8.3/msvc2022_64" -Configuration Release -Package
 
+      - name: Verify settings with native Windows fonts and widgets
+        run: |
+          $env:PATH = "$env:RUNNER_TEMP/Qt/6.8.3/msvc2022_64/bin;$env:PATH"
+          $env:QT_QPA_PLATFORM = 'windows'
+          foreach ($suite in @('settings', 'settings_workflows')) {
+            $output = Join-Path $env:RUNNER_TEMP "native-$suite.txt"
+            $test = Join-Path $env:GITHUB_WORKSPACE "build/native/Release/test_$suite.exe"
+            $process = Start-Process -FilePath $test -ArgumentList @('-o', ('"{0},txt"' -f $output)) -WindowStyle Hidden -PassThru
+            if (!$process.WaitForExit(60000)) {
+              $process.Kill()
+              throw "Native $suite test timed out."
+            }
+            Get-Content -LiteralPath $output
+            if ($process.ExitCode -ne 0) { throw "Native $suite test failed with exit code $($process.ExitCode)." }
+          }
+
       - name: Verify generated per-user installer script
         run: |
           $scripts = @(Get-ChildItem -LiteralPath 'dist/_CPack_Packages' -Filter project.nsi -Recurse -File)
@@ -70,6 +86,9 @@ jobs:
           if (!(Test-Path -LiteralPath $diagnostics)) { throw 'The deployed application did not produce diagnostics.' }
           Get-Content -LiteralPath $diagnostics -Raw | ConvertFrom-Json | Out-Null
           Write-Output 'Deployed application smoke test passed with only Windows system directories in PATH.'
+
+      - name: Verify installation and uninstallation on the clean runner
+        run: ./scripts/test-installer.ps1
 
       - name: Prepare release files
         run: |
