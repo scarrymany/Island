@@ -113,6 +113,6 @@ SCARP ISLAND не отправляет историю прослушивания
 
 Новый источник можно подключить через контракт `MediaSnapshot` и команды плеера, сохранив HUD и настройки.
 
-Настройки оформлены в стиле [SCARPCC](https://github.com/scarrymany/SCARPCC-NEW), компактная подача музыки - [MusicUI](https://github.com/But3rflys/umbrella-work/tree/main/scripts/musicui). Реализация самостоятельная.
+Настройки оформлены в стиле SCARP. Компактная подача музыки вдохновлена [MusicUI](https://github.com/But3rflys/umbrella-work/tree/main/scripts/musicui). Реализация самостоятельная.
 
 Код SCARP ISLAND распространяется по [MIT](LICENSE). Лицензии компонентов указаны в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
