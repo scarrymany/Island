@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Island VERSION 1.0.3 LANGUAGES CXX)
+project(Island VERSION 1.0.4 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Island requires Windows 10 1809 or newer")

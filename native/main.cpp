@@ -32,7 +32,7 @@ void logMessage(QtMsgType type, const QMessageLogContext&, const QString& messag
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName("Island"); app.setOrganizationName("Island"); app.setApplicationVersion("1.0.3");
+    app.setApplicationName("Island"); app.setOrganizationName("Island"); app.setApplicationVersion("1.0.4");
     app.setApplicationDisplayName("SCARP ISLAND");
     app.setQuitOnLastWindowClosed(false);
     QTranslator translator;

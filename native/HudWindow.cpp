@@ -7,6 +7,7 @@
 #include <QCloseEvent>
 #include <QContextMenuEvent>
 #include <QCursor>
+#include <QDateTime>
 #include <QJsonArray>
 #include <QLinearGradient>
 #include <QMenu>
@@ -27,6 +28,8 @@ constexpr int ArtworkSize = 96;
 constexpr int ArtworkBlurRadius = 10;
 constexpr int ArtworkBlurPasses = 3;
 constexpr double ArtworkMaxLuminance = 0.035;
+constexpr int SeekConfirmationTimeoutMs = 3000;
+constexpr double SeekConfirmationTolerance = 1.0;
 const QStringList Transport{"previous", "play", "next"};
 
 QImage blurredArtwork(const QPixmap& cover) {
@@ -157,6 +160,9 @@ HudWindow::HudWindow(const QJsonObject& config)
     frameTimer_.setTimerType(Qt::PreciseTimer);
     connect(&frameTimer_, &QChronoTimer::timeout, this, qOverload<>(&QWidget::update));
     hideTimer_.setSingleShot(true);
+    seekTimer_.setSingleShot(true);
+    seekTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&seekTimer_, &QTimer::timeout, this, [this] { pendingSeek_.reset(); update(); });
     connect(&hideTimer_, &QTimer::timeout, this, [this] {
         if (editing_ || menuOpen_ || dragWindow_ || !dragElement_.isEmpty()) return;
         if (underMouse() || pointerInDockArea()) { restartHideTimer(); return; }
@@ -173,6 +179,7 @@ HudWindow::HudWindow(const QJsonObject& config)
 HudWindow::~HudWindow() {
     frameTimer_.stop();
     hideTimer_.stop();
+    seekTimer_.stop();
     animations_.stopAll();
     if (QGuiApplication::platformName() == "windows") WindowsIntegration::releaseOverlayBackdrop(winId());
 }
@@ -433,6 +440,18 @@ void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
         || snapshot.artist != snapshot_.artist || snapshot.album != snapshot_.album;
     if (changed || !snapshot.active || !snapshot.canSeek || !std::isfinite(snapshot.duration)
         || snapshot.duration <= 0 || snapshot.duration != snapshot_.duration) cancelSeek();
+    if (pendingSeek_) {
+        const double expected = pendingSeek_->estimatedPosition();
+        if (std::abs(snapshot.estimatedPosition() - expected) <= SeekConfirmationTolerance) {
+            pendingSeek_.reset();
+            seekTimer_.stop();
+        } else {
+            pendingSeek_->position = expected;
+            pendingSeek_->updatedAt = QDateTime::currentMSecsSinceEpoch();
+            pendingSeek_->playing = snapshot.playing;
+            pendingSeek_->playbackRate = snapshot.playbackRate;
+        }
+    }
     if (snapshot.cover != snapshot_.cover) {
         oldCover_ = cover_; cover_ = QPixmap();
         if (!snapshot.cover.isEmpty()) cover_.loadFromData(snapshot.cover);
@@ -622,7 +641,8 @@ QString HudWindow::hitTest(const QPointF& point) const {
 }
 void HudWindow::mousePressEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton) return;
-    cancelSeek();
+    cancelScrub();
+    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
     if (collapsed_ || dockProgress_ > 0) { reveal(); return; }
     hideTimer_.stop();
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
@@ -637,7 +657,7 @@ void HudWindow::mousePressEvent(QMouseEvent* e) {
     else dragElement_ = hit;
 }
 void HudWindow::mouseMoveEvent(QMouseEvent* e) {
-    if (seekPreview_ && !e->buttons().testFlag(Qt::LeftButton)) cancelSeek();
+    if (seekPreview_ && !e->buttons().testFlag(Qt::LeftButton)) cancelScrub();
     if (dockProgress_ > 0) return;
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     if (hover_ != hit) {
@@ -681,8 +701,14 @@ void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
     } else if (seekPreview_) {
         previewSeekAt(point);
         const auto target = seekPreview_;
-        cancelSeek();
-        if (target) emit command("seek", *target);
+        cancelScrub();
+        if (target) {
+            pendingSeek_ = snapshot_;
+            pendingSeek_->position = *target;
+            pendingSeek_->updatedAt = QDateTime::currentMSecsSinceEpoch();
+            seekTimer_.start(SeekConfirmationTimeoutMs);
+            emit command("seek", *target);
+        }
     } else if (!editing_ && hit == dragElement_) {
         if (Transport.contains(hit) && snapshot_.active) {
             const bool enabled = hit == "play" ? snapshot_.canPlayPause : hit == "next" ? snapshot_.canNext : snapshot_.canPrevious;
@@ -702,15 +728,22 @@ void HudWindow::previewSeekAt(const QPointF& point) {
     seekPreview_ = std::clamp((point.x() - rect.left()) / rect.width(), 0.0, 1.0) * snapshot_.duration;
     update();
 }
-void HudWindow::cancelSeek() {
+void HudWindow::cancelScrub() {
     if (!seekPreview_) return;
     seekPreview_.reset();
     if (dragElement_ == "progress") dragElement_.clear();
     restartHideTimer();
     update();
 }
+void HudWindow::cancelSeek() {
+    cancelScrub();
+    pendingSeek_.reset();
+    seekTimer_.stop();
+    update();
+}
 double HudWindow::displayedPosition() const {
-    return seekPreview_ ? *seekPreview_ : snapshot_.estimatedPosition();
+    if (seekPreview_) return *seekPreview_;
+    return pendingSeek_ ? pendingSeek_->estimatedPosition() : snapshot_.estimatedPosition();
 }
 void HudWindow::volumeAt(const QPointF& point) {
     if (!volumeAvailable_) return;

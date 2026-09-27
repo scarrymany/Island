@@ -69,6 +69,7 @@ private:
     void volumeAt(const QPointF& point);
     bool seekEnabled() const;
     void previewSeekAt(const QPointF& point);
+    void cancelScrub();
     void cancelSeek();
     double displayedPosition() const;
     QJsonObject config_;
@@ -83,10 +84,12 @@ private:
     std::optional<QPointF> dragOrigin_;
     std::optional<QPoint> dragWindow_;
     std::optional<double> seekPreview_;
+    std::optional<MediaSnapshot> pendingSeek_;
     QPixmap cover_, oldCover_;
     QImage artwork_, oldArtwork_, displayedArtwork_;
     double coverAlpha_ = 1, titleAlpha_ = 1, playAlpha_ = 1, hoverAlpha_ = 1;
     QChronoTimer frameTimer_;
     QTimer hideTimer_;
+    QTimer seekTimer_;
     AnimationClock animations_;
 };

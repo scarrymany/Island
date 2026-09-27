@@ -8,6 +8,8 @@
 #include <QPainter>
 #include <QFontDatabase>
 #include <QFontInfo>
+#include <QDateTime>
+#include <QElapsedTimer>
 #include <QListWidget>
 #include <QScreen>
 #include <QTemporaryDir>
@@ -62,6 +64,12 @@ private:
     static QColor backgroundPixel(HudWindow& hud) {
         return hud.grab().toImage().pixelColor(hud.width() / 2, hud.height() / 2);
     }
+    static QImage timeAt(HudWindow& reference, MediaSnapshot snapshot, double position) {
+        snapshot.position = position;
+        snapshot.playing = false;
+        reference.setSnapshot(snapshot);
+        return reference.grab(pixelRect(reference, "time")).toImage();
+    }
 private slots:
     void hudUsesBundledFontAndConfiguredWeight() {
         auto c = config();
@@ -107,6 +115,145 @@ private slots:
         QCOMPARE(commands.size(), 1);
         QCOMPARE(commands.first().first().toString(), QString("seek"));
         QVERIFY(qAbs(commands.first().at(1).toDouble() - target) < 0.001);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), draggingTime);
+        media.position = 36; media.updatedAt = QDateTime::currentMSecsSinceEpoch();
+        hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), draggingTime);
+        media.position = target; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), draggingTime);
+        media.position = target + 10; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), timeAt(reference, media, media.position));
+    }
+    void repeatedSeeksIgnoreAnEarlierTargetAcknowledgement() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c), reference(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        media.position = 10; media.title = "Track"; media.sourceId = "Player";
+        hud.setSnapshot(media); hud.reveal();
+        const QRect bar = pixelRect(hud, "progress");
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, QPoint(bar.left() + bar.width() / 4, bar.center().y()));
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, QPoint(bar.left() + bar.width() * 3 / 4, bar.center().y()));
+        QCOMPARE(commands.size(), 2);
+        const double first = commands.first().at(1).toDouble(), last = commands.last().at(1).toDouble();
+        const auto expected = timeAt(reference, media, last);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), expected);
+        media.position = first; media.updatedAt = QDateTime::currentMSecsSinceEpoch(); hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), expected);
+        media.position = last; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), expected);
+        media.position = last + 8; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), timeAt(reference, media, media.position));
+    }
+    void unacknowledgedPausedSeekExpiresAndShowsLatestPlayerPosition() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c), reference(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200; media.position = 20;
+        hud.setSnapshot(media); hud.reveal();
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        QCOMPARE(commands.size(), 1);
+        const auto target = timeAt(reference, media, commands.first().at(1).toDouble());
+        media.position = 35; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), target);
+        QTest::qWait(150);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), target);
+        const auto actual = timeAt(reference, media, media.position);
+        QTRY_COMPARE_WITH_TIMEOUT(hud.grab(pixelRect(hud, "time")).toImage(), actual, 3500);
+        QCOMPARE(commands.size(), 1);
+    }
+    void pendingSeekAdvancesAtPlaybackRateAndFreezesOnPause() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c), reference(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        media.position = 10; media.playing = true; media.playbackRate = 2;
+        media.updatedAt = QDateTime::currentMSecsSinceEpoch();
+        hud.setSnapshot(media); hud.reveal();
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        QCOMPARE(commands.size(), 1);
+        const double target = commands.first().at(1).toDouble();
+        QElapsedTimer elapsed; elapsed.start();
+        QTest::qWait(600);
+        const double predicted = target + elapsed.elapsed() / 1000.0 * media.playbackRate;
+        media.playing = false; media.position = 12; media.updatedAt = QDateTime::currentMSecsSinceEpoch();
+        hud.setSnapshot(media);
+        const auto paused = hud.grab(pixelRect(hud, "time")).toImage();
+        QVERIFY(paused == timeAt(reference, media, predicted - .15) || paused == timeAt(reference, media, predicted + .15));
+        QTest::qWait(200);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), paused);
+        media.position = predicted; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), timeAt(reference, media, predicted));
+    }
+    void pendingSeekIsCancelledWhenTrackOrSourceChanges_data() {
+        QTest::addColumn<bool>("sourceChange");
+        QTest::newRow("track") << false;
+        QTest::newRow("source") << true;
+    }
+    void pendingSeekIsCancelledWhenTrackOrSourceChanges() {
+        QFETCH(bool, sourceChange);
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c), reference(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        media.title = "Track"; media.sourceId = "Player"; media.position = 10;
+        hud.setSnapshot(media); hud.reveal();
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        if (sourceChange) media.sourceId = "Other Player"; else media.title = "Other Track";
+        media.position = 30; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), timeAt(reference, media, media.position));
+    }
+    void aNewScrubCannotContinueAnInterruptedWindowDrag() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        hud.setSnapshot(media); hud.reveal();
+        const QPoint header(hud.width() / 2, 15);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header);
+        QTest::mouseMove(&hud, header + QPoint(20, 10));
+        const QRect geometry = hud.geometry();
+        const QPoint progress = point(hud, "progress");
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, progress);
+        QTest::mouseMove(&hud, progress + QPoint(30, 0));
+        QCOMPARE(hud.geometry(), geometry);
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, progress + QPoint(30, 0));
+        QCOMPARE(commands.size(), 1);
+        QCOMPARE(commands.first().first().toString(), QString("seek"));
+    }
+    void continuousScrubbingOwnsEveryFrameAcrossPlayerUpdates() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c), reference(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        media.title = "Track"; media.artist = "Artist"; media.sourceId = "Player";
+        media.position = 10; media.playing = true; media.updatedAt = QDateTime::currentMSecsSinceEpoch();
+        reference.setSnapshot(media);
+        hud.setSnapshot(media); hud.reveal();
+        QCoreApplication::processEvents();
+        const QRect geometry = hud.geometry();
+        const QRect bar = pixelRect(hud, "progress");
+        const QRectF logicalBar = hud.elementRects()["progress"];
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        QPoint cursor;
+        for (int frame = 0; frame < 80; ++frame) {
+            const int step = frame < 40 ? frame : 79 - frame;
+            cursor = QPoint(bar.left() + qRound(bar.width() * (0.1 + step * .02)), bar.center().y());
+            QTest::mouseMove(&hud, cursor);
+            const double target = (cursor.x() - 14 - logicalBar.left()) / logicalBar.width() * media.duration;
+            media.position = 10 + frame * .1;
+            media.playing = frame < 25 || frame >= 50;
+            media.updatedAt = QDateTime::currentMSecsSinceEpoch();
+            hud.setSnapshot(media);
+            hud.setVolume(frame / 100.0);
+            QCOMPARE(hud.geometry(), geometry);
+            const auto actual = hud.grab(pixelRect(hud, "time")).toImage();
+            const auto expected = timeAt(reference, media, target);
+            QVERIFY2(actual == expected, qPrintable(QStringLiteral("Timeline differs from cursor preview at frame %1").arg(frame)));
+            QCOMPARE(commands.size(), 0);
+            QTest::qWait(1);
+        }
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, cursor);
+        QCOMPARE(commands.size(), 1);
     }
     void scrubReleaseOutsideClampsToTrackBounds_data() {
         QTest::addColumn<bool>("pastEnd");
