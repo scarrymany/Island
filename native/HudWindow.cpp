@@ -147,11 +147,11 @@ void icon(QPainter& p, const QString& name, const QRectF& rect, const QColor& co
 HudWindow::HudWindow(const QJsonObject& config)
     : QWidget(nullptr, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool | Qt::WindowDoesNotAcceptFocus),
       config_(config) {
-    setWindowTitle("Island HUD");
+    setWindowTitle("SCARP ISLAND");
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating);
     setMouseTracking(true);
-    setAccessibleName(QStringLiteral("Island - музыкальный оверлей"));
+    setAccessibleName(QStringLiteral("SCARP ISLAND - музыкальный оверлей"));
     frameTimer_.setTimerType(Qt::PreciseTimer);
     connect(&frameTimer_, &QChronoTimer::timeout, this, qOverload<>(&QWidget::update));
     hideTimer_.setSingleShot(true);

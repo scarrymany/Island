@@ -402,6 +402,6 @@ void UpdateService::launchInstaller() {
         return;
     }
     staging_->setAutoRemove(false);
-    emit statusChanged(QStringLiteral("Установщик запущен. Island завершает работу для обновления"));
+    emit statusChanged(QStringLiteral("Установщик запущен. SCARP ISLAND завершает работу для обновления"));
     emit readyToQuit();
 }
