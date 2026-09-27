@@ -1,0 +1,70 @@
+#pragma once
+
+#include "MediaBridge.h"
+#include <QJsonObject>
+#include <QMap>
+#include <QPixmap>
+#include <QTimer>
+#include <QVariantAnimation>
+#include <QWidget>
+#include <functional>
+#include <optional>
+
+class HudWindow final : public QWidget {
+    Q_OBJECT
+public:
+    explicit HudWindow(const QJsonObject& config);
+    void applyConfig(const QJsonObject& config);
+    void setSnapshot(const MediaSnapshot& snapshot);
+    void setVolume(double value);
+    void setEditing(bool enabled);
+    bool editing() const { return editing_; }
+    void reveal(bool manual = false);
+    void conceal(bool manual = false);
+    void toggle();
+    void placeOnScreen();
+    QMap<QString, QRectF> elementRects() const;
+    const QJsonObject& config() const { return config_; }
+signals:
+    void command(const QString& action, double value);
+    void volumeChanged(double value);
+    void configChanged(const QJsonObject& config);
+    void settingsRequested();
+    void editingChanged(bool enabled);
+protected:
+    void paintEvent(QPaintEvent*) override;
+    void showEvent(QShowEvent*) override;
+    void hideEvent(QHideEvent*) override;
+    void closeEvent(QCloseEvent*) override;
+    void enterEvent(QEnterEvent*) override;
+    void leaveEvent(QEvent*) override;
+    void mousePressEvent(QMouseEvent*) override;
+    void mouseMoveEvent(QMouseEvent*) override;
+    void mouseReleaseEvent(QMouseEvent*) override;
+    void wheelEvent(QWheelEvent*) override;
+    void contextMenuEvent(QContextMenuEvent*) override;
+private:
+    void applyNative();
+    void syncFrameTimer();
+    void restartHideTimer();
+    void watchScreen(QScreen* screen);
+    void animate(const QString& name, double from, double to, std::function<void(double)> callback,
+                 std::function<void()> finished = {});
+    void stopAnimation(const QString& name);
+    void paintElement(QPainter& painter, const QString& name, QRectF rect);
+    void paintCover(QPainter& painter, const QRectF& rect, const QPixmap& image, double opacity);
+    QPointF localPoint(const QPointF& point) const;
+    QString hitTest(const QPointF& point) const;
+    void volumeAt(const QPointF& point);
+    QJsonObject config_;
+    MediaSnapshot snapshot_;
+    double volume_ = .5;
+    bool editing_ = false, manualHidden_ = false, fadingOut_ = false, moved_ = false;
+    QString hover_, dragElement_;
+    std::optional<QPointF> dragOrigin_;
+    std::optional<QPoint> dragWindow_;
+    QPixmap cover_, oldCover_;
+    double coverAlpha_ = 1, titleAlpha_ = 1, playAlpha_ = 1, hoverAlpha_ = 1;
+    QTimer frameTimer_, hideTimer_;
+    QMap<QString, QVariantAnimation*> animations_;
+};
