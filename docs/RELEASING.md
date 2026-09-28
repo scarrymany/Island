@@ -2,7 +2,7 @@
 
 GitHub Actions собирает Windows x64 на Windows Server 2022 с MSVC 2022 и Qt 6.8.3. Python нужен только для загрузки Qt через aqtinstall; установленная программа написана на C++ и не требует Python.
 
-Каждый push и pull request запускает сборку, CTest, развёртывание Qt и упаковку NSIS. Затем CI проверяет запуск готового EXE с PATH, содержащим только системные папки Windows. Результат доступен в артефакте `Island-win-x64`:
+Каждый push и pull request запускает сборку, CTest, развёртывание Qt и упаковку NSIS. Затем CI проверяет настройки в нативном Windows backend, запуск готового EXE с PATH, содержащим только системные папки Windows, установку и удаление на чистом runner. Результат доступен в артефакте `Island-win-x64`:
 
 - `Island-Setup.exe` - установщик для текущего пользователя;
 - `Island-win-x64.zip` - папка `Island` с EXE, Qt DLL, плагинами и лицензиями;
@@ -10,7 +10,7 @@ GitHub Actions собирает Windows x64 на Windows Server 2022 с MSVC 202
 
 ## Новый релиз
 
-1. Обновите версию в `CMakeLists.txt`, `native/main.cpp`, `resources/island.rc`, `resources/island.manifest` и резервную версию в `native/UpdateService.cpp`.
+1. Обновите версию в `CMakeLists.txt`, `native/AppInfo.h`, `resources/island.rc` и `resources/island.manifest`. Добавьте описание изменений в `docs/releases/vX.Y.Z.md`.
 2. Выполните сборку и проверьте установленный HUD, переключение треков, горячую клавишу и настройки:
 
    ```powershell
@@ -25,7 +25,7 @@ GitHub Actions собирает Windows x64 на Windows Server 2022 с MSVC 202
    git push origin v1.0.0
    ```
 
-Тег `vX.Y.Z` запускает отдельную публикацию с разрешением `contents: write`. Сначала создаётся draft с автоматически сформированными release notes. Скрипт сравнивает размер и GitHub `digest` обоих файлов с локальными SHA-256, затем публикует релиз. Ошибка проверки оставляет draft; ранее опубликованные файлы скрипт не заменяет.
+Тег `vX.Y.Z` запускает отдельную публикацию с разрешением `contents: write`. Сначала создаётся draft с описанием из `docs/releases/vX.Y.Z.md`; если файла нет, GitHub формирует описание автоматически. Скрипт сравнивает размер и GitHub `digest` обоих файлов с локальными SHA-256, затем публикует релиз. Ошибка проверки оставляет draft; ранее опубликованные файлы скрипт не заменяет.
 
 Сборка проверяет совпадение тега и версии CMake до установки зависимостей, а при упаковке сверяет версию EXE. Обычная сборка ветки, pull request и ручной запуск workflow не публикуют релизы.
 
