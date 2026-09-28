@@ -551,12 +551,7 @@ private slots:
         QCOMPARE(pages->currentIndex(), 0);
         QTest::keyClick(navigation, Qt::Key_End);
         QCOMPARE(pages->currentIndex(), 6);
-        QSignalSpy toggled(window_.get(), &SettingsWindow::toggleHud);
-        auto* hud = button(window_.get(), "HUD");
-        QVERIFY(hud);
-        QTest::mouseClick(hud, Qt::LeftButton);
-        QTest::keyClick(hud, Qt::Key_Space);
-        QCOMPARE(toggled.size(), 2);
+        QVERIFY(!button(window_.get(), "HUD"));
         QPushButton* minimize = nullptr;
         QPushButton* maximize = nullptr;
         for (auto* control : window_->findChildren<QPushButton*>()) {

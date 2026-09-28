@@ -11,6 +11,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QTemporaryDir>
@@ -19,6 +20,48 @@
 class SettingsTest : public QObject {
     Q_OBJECT
 private slots:
+    void buttonMouseFocusDoesNotRemainOutlined_data() {
+        QTest::addColumn<int>("page");
+        QTest::addColumn<QString>("name");
+        QTest::newRow("github") << 6 << QString("projectRepository");
+        QTest::newRow("restore-shortcut") << 5 << QString("restoreHotkey");
+    }
+
+    void buttonMouseFocusDoesNotRemainOutlined() {
+        QFETCH(int, page);
+        QFETCH(QString, name);
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        auto config = store.config();
+        config["settings_animations"] = false;
+        QVERIFY(store.update(config));
+        SettingsWindow settings(&store);
+        settings.show();
+        auto* navigation = settings.findChild<QListWidget*>("navigation");
+        navigation->setCurrentRow(page);
+        auto* button = settings.findChild<QPushButton*>(name);
+        QVERIFY(button);
+        for (auto* scroll : settings.findChildren<QScrollArea*>())
+            if (scroll->isAncestorOf(button)) scroll->ensureWidgetVisible(button);
+        const QSignalBlocker block(button);
+        navigation->setFocus();
+        QTest::mouseMove(&settings, QPoint(240, 60));
+        QTest::qWait(30);
+        const QImage baseline = button->grab().toImage();
+        QTest::mouseClick(button, Qt::LeftButton);
+        QTest::mouseMove(&settings, QPoint(240, 60));
+        QVERIFY(button->hasFocus());
+        QCOMPARE(button->grab().toImage(), baseline);
+        button->clearFocus();
+        button->setFocus(Qt::TabFocusReason);
+        QVERIFY(button->grab().toImage() != baseline);
+        QTest::mouseClick(button, Qt::LeftButton);
+        QTest::mouseMove(&settings, QPoint(240, 60));
+        QCOMPARE(button->grab().toImage(), baseline);
+        QTest::keyClick(button, Qt::Key_Space);
+        QVERIFY(button->grab().toImage() != baseline);
+    }
+
     void longStatusDoesNotTakeSpaceFromSettings() {
         QTemporaryDir temp;
         ConfigStore store(temp.filePath("config.json"));

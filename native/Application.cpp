@@ -48,7 +48,6 @@ Application::Application(bool demo, bool background, QString configPath, QObject
         if (!store_.update(c, &error)) { setStatus(error); hud_.applyConfig(store_.config()); }
         settings_.refresh();
     });
-    connect(&settings_, &SettingsWindow::toggleHud, &hud_, &HudWindow::toggle);
     connect(&settings_, &SettingsWindow::editLayoutChanged, this, &Application::setEditing);
     connect(&hud_, &HudWindow::editingChanged, this, &Application::setEditing);
     connect(&hud_, &HudWindow::settingsRequested, this, &Application::showSettings);

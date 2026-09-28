@@ -25,6 +25,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
+#include <QKeyEvent>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
@@ -41,6 +42,7 @@
 #include <QSlider>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -335,17 +337,9 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     auto* contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(30, 27, 26, 20);
     contentLayout->setSpacing(18);
-    auto* header = new QHBoxLayout;
     heading_ = new QLabel;
     heading_->setObjectName("heading");
-    header->addWidget(heading_, 1);
-    auto* toggle = new QPushButton("HUD");
-    toggle->setIcon(navigationIcon(u'\uE7F4', QColor("#D4D4D4")));
-    toggle->setAccessibleName(QStringLiteral("Показать / скрыть музыкальный островок"));
-    toggle->setToolTip(QStringLiteral("Переключить видимость музыкального островка"));
-    connect(toggle, &QPushButton::clicked, this, &SettingsWindow::toggleHud);
-    header->addWidget(toggle);
-    contentLayout->addLayout(header);
+    contentLayout->addWidget(heading_);
     pages_ = new QStackedWidget;
     pages_->setObjectName("settingsPages");
     pageOpacity_ = new QGraphicsOpacityEffect(pages_);
@@ -378,6 +372,11 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     buildProfiles();
     buildSystem();
     buildUpdates();
+    for (auto* button : findChildren<QPushButton*>()) {
+        if (button->property("captionButton").toBool()) continue;
+        button->setProperty("mouseFocus", true);
+        button->installEventFilter(this);
+    }
     // AlignTop caps wrapped layouts to sizeHint(); a stretch preserves their full height-for-width.
     for (auto* scroll : pages_->findChildren<QScrollArea*>())
         qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->addStretch();
@@ -1201,6 +1200,7 @@ void SettingsWindow::updateStyle()
         QListWidget#navigation { background: transparent; border: none; outline: none; font-size: 10pt; font-weight: 500; }
         QPushButton { background: %9; border: 1px solid %4; border-radius: 8px; padding: 9px 14px; outline: none; }
         QPushButton:focus { border-color: %7; }
+        QPushButton[mouseFocus="true"]:focus:!hover:!pressed:!checked { border-color: %4; }
         QPushButton:hover { background: %10; border-color: %8; }
         QPushButton:pressed, QPushButton:checked { background: %10; border-color: %8; }
         QPushButton#accentButton { background: %8; color: %11; font-weight: 600; border-color: %8; }
@@ -1341,6 +1341,27 @@ void SettingsWindow::resizeEvent(QResizeEvent* event)
 
 bool SettingsWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (auto* button = qobject_cast<QPushButton*>(watched)) {
+        bool mouseFocus = button->property("mouseFocus").toBool();
+        if (event->type() == QEvent::FocusIn) {
+            const auto reason = static_cast<QFocusEvent*>(event)->reason();
+            if (reason != Qt::PopupFocusReason && reason != Qt::ActiveWindowFocusReason)
+                mouseFocus = reason != Qt::TabFocusReason && reason != Qt::BacktabFocusReason
+                    && reason != Qt::ShortcutFocusReason;
+        } else if (event->type() == QEvent::MouseButtonPress) {
+            mouseFocus = true;
+        } else if (event->type() == QEvent::KeyPress) {
+            const auto key = static_cast<QKeyEvent*>(event)->key();
+            if (key == Qt::Key_Space || key == Qt::Key_Return || key == Qt::Key_Enter)
+                mouseFocus = false;
+        }
+        if (mouseFocus != button->property("mouseFocus").toBool()) {
+            button->setProperty("mouseFocus", mouseFocus);
+            button->style()->unpolish(button);
+            button->style()->polish(button);
+            button->update();
+        }
+    }
     if (watched == titleBar_) {
         if (event->type() == QEvent::MouseButtonPress) {
             const auto* mouse = static_cast<QMouseEvent*>(event);

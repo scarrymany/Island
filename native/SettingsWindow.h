@@ -36,7 +36,6 @@ public:
     void refresh();
 
 signals:
-    void toggleHud();
     void editLayoutChanged(bool enabled);
     void sourceChanged(QString source);
     void checkUpdates();
