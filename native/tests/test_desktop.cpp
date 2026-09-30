@@ -291,6 +291,78 @@ private slots:
         }
     }
 
+    void antialiasedCornersMatchQtPainting_data() {
+        QTest::addColumn<double>("scale");
+        QTest::newRow("normal") << 1.0;
+        QTest::newRow("fractional") << 1.25;
+        QTest::newRow("large") << 1.75;
+    }
+    void antialiasedCornersMatchQtPainting() {
+        QFETCH(double, scale);
+        if (QGuiApplication::platformName() != QStringLiteral("windows"))
+            QSKIP("Requires an interactive Windows desktop and the windows QPA plugin");
+        auto* screen = QGuiApplication::primaryScreen();
+        QVERIFY(screen);
+        auto c = desktopConfiguration(screen, false);
+        c["scale"] = scale; c["width"] = 360; c["height"] = 100;
+        c["idle_collapse"] = false; c["auto_hide_seconds"] = 0;
+        c["background"] = "#FFFFFF"; c["gradient_enabled"] = false;
+        c["artwork_background"] = false; c["opacity"] = 1; c["border_width"] = 0;
+        auto visible = c["visible"].toObject();
+        for (auto it = visible.begin(); it != visible.end(); ++it) it.value() = false;
+        c["visible"] = visible;
+        auto effects = c["animations"].toObject();
+        for (auto it = effects.begin(); it != effects.end(); ++it) it.value() = false;
+        c["animations"] = effects;
+        HudWindow hud(c);
+        if (!screen->geometry().contains(hud.geometry())) QSKIP("Screen is too small for the edge comparison");
+        const QPoint oldCursor = QCursor::pos();
+        const auto restoreCursor = qScopeGuard([oldCursor] { QCursor::setPos(oldCursor); });
+        QCursor::setPos(screen->geometry().bottomRight() - QPoint(5, 5));
+        const HWND originalFocus = GetForegroundWindow();
+        QWidget background(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint
+            | Qt::WindowDoesNotAcceptFocus);
+        background.setAttribute(Qt::WA_ShowWithoutActivating);
+        QPalette palette; palette.setColor(QPalette::Window, Qt::black);
+        background.setPalette(palette); background.setAutoFillBackground(true);
+        background.setGeometry(hud.geometry()); background.show();
+        WindowsIntegration::ensureTopmost(background.winId());
+        hud.reveal(); QTest::qWait(180);
+        const QImage reference = hud.grab().toImage();
+        const QString output = qEnvironmentVariable("ISLAND_DESKTOP_CAPTURE_DIR",
+            QDir::current().filePath(QStringLiteral("build/desktop-captures")));
+        QVERIFY(QDir().mkpath(output));
+        const QImage actual = captureDesktop(screen, hud.geometry(),
+            QDir(output).filePath(QStringLiteral("antialiased-edges-%1.png").arg(scale)));
+        QVERIFY(!actual.isNull()); QCOMPARE(actual.size(), reference.size());
+        const auto hwnd = reinterpret_cast<HWND>(hud.winId());
+        HRGN region = CreateRectRgn(0, 0, 0, 0);
+        QVERIFY(region);
+        const auto freeRegion = qScopeGuard([region] { DeleteObject(region); });
+        QVERIFY(GetWindowRgn(hwnd, region) != ERROR);
+        RECT frame{}; POINT origin{};
+        QVERIFY(GetWindowRect(hwnd, &frame)); QVERIFY(ClientToScreen(hwnd, &origin));
+        int partial = 0;
+        for (int y = 0; y < reference.height(); ++y) {
+            for (int x = 0; x < reference.width(); ++x) {
+                const QColor expected = reference.pixelColor(x, y);
+                if (expected.alpha() <= 0 || expected.alpha() >= 255) continue;
+                ++partial;
+                QVERIFY2(PtInRegion(region, x + origin.x - frame.left, y + origin.y - frame.top),
+                    "A binary native window region clipped a painted antialiased edge pixel");
+                const QColor composed = actual.pixelColor(x, y);
+                const int expectedChannel = expected.alpha(); // White foreground over a black desktop.
+                QVERIFY2(std::abs(composed.red() - expectedChannel) <= 4
+                    && std::abs(composed.green() - expectedChannel) <= 4
+                    && std::abs(composed.blue() - expectedChannel) <= 4,
+                    qPrintable(QStringLiteral("Edge (%1,%2): alpha %3, desktop RGB (%4,%5,%6)")
+                        .arg(x).arg(y).arg(expectedChannel).arg(composed.red()).arg(composed.green()).arg(composed.blue())));
+            }
+        }
+        QVERIFY2(partial > 40, "No smoothly antialiased corner pixels were rendered");
+        QVERIFY2(GetForegroundWindow() == originalFocus, "Edge rendering test stole keyboard focus");
+    }
+
     void nativePointerHover() {
         if (QGuiApplication::platformName() != QStringLiteral("windows"))
             QSKIP("Requires an interactive Windows desktop and the windows QPA plugin");

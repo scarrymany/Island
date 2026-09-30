@@ -213,7 +213,7 @@ private slots:
     void everyToggleRoundTripsWithMouseAndKeyboard()
     {
         const auto toggles = window_->findChildren<SettingsToggle*>();
-        QCOMPARE(toggles.size(), 28);
+        QCOMPARE(toggles.size(), 29);
         for (auto* toggle : toggles) {
             const bool original = toggle->isChecked();
             QTest::mouseClick(toggle, Qt::LeftButton, Qt::NoModifier, toggle->rect().center());

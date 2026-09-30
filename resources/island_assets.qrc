@@ -5,5 +5,9 @@
         <file alias="github/white.png">github/white.png</file>
         <file alias="fonts/Inter.ttf">fonts/Inter.ttf</file>
         <file alias="fonts/Manrope.ttf">fonts/Manrope.ttf</file>
+        <file alias="fonts/GolosText.ttf">fonts/GolosText.ttf</file>
+        <file alias="fonts/Rubik.ttf">fonts/Rubik.ttf</file>
+        <file alias="fonts/IBMPlexSans.ttf">fonts/IBMPlexSans.ttf</file>
+        <file alias="fonts/JetBrainsMono.ttf">fonts/JetBrainsMono.ttf</file>
     </qresource>
 </RCC>

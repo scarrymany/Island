@@ -34,18 +34,38 @@ private slots:
         QCOMPARE(AppAssets::settingsFontFamily(), family);
         const QString letters = QStringLiteral("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
                                                 "абвгдеёжзийклмнопрстуфхцчшщъыьэюяІіЇїЄєҐґ");
-        for (const auto& name : {QStringLiteral("Inter"), QStringLiteral("Manrope")}) {
+        const QList<QPair<QString, QString>> fonts = {
+            {"Inter", "Inter"}, {"Manrope", "Manrope"}, {"Golos Text", "GolosText"},
+            {"Rubik", "Rubik"}, {"IBM Plex Sans", "IBMPlexSans"}, {"JetBrains Mono", "JetBrainsMono"}
+        };
+        for (const auto& entry : fonts) {
+            const auto& name = entry.first;
+            QVERIFY2(AppAssets::bundledFontFamilies().contains(name), qPrintable(name));
             QVERIFY(QFontDatabase::families(QFontDatabase::Cyrillic).contains(name));
-            QFile file(QStringLiteral(":/island/fonts/%1.ttf").arg(name));
+            QFile file(QStringLiteral(":/island/fonts/%1.ttf").arg(entry.second));
             QVERIFY(file.open(QIODevice::ReadOnly));
             const QRawFont raw(file.readAll(), 24, QFont::PreferNoHinting);
             QVERIFY(raw.isValid());
-            QCOMPARE(raw.familyName(), name);
+            // Variable Rubik has a legacy "Rubik Light" face but the preferred
+            // application family is "Rubik" on both supported Windows backends.
+            QVERIFY(raw.familyName() == name || (name == "Rubik" && raw.familyName() == "Rubik Light"));
             for (const QChar letter : letters)
                 QVERIFY2(raw.supportsCharacter(letter),
                     qPrintable(QStringLiteral("%1 is missing Cyrillic glyph: %2").arg(name).arg(letter)));
+            QFont requested(name);
+            requested.setPixelSize(24);
+            requested.setWeight(QFont::Normal);
+            const auto resolved = QRawFont::fromFont(requested);
+            QVERIFY(resolved.isValid());
+            // Compare glyph mapping from the real resource: an installed font
+            // or Windows fallback must not silently satisfy this check.
+            QCOMPARE(resolved.fontTable("cmap"), raw.fontTable("cmap"));
+            const auto glyphs = resolved.glyphIndexesForString(letters);
+            QCOMPARE(glyphs.size(), letters.size());
+            for (const auto glyph : glyphs) QVERIFY(glyph != 0);
             qInfo() << "Bundled font:" << name << "; checked Cyrillic glyphs:" << letters.size();
         }
+        QCOMPARE(AppAssets::bundledFontFamilies(), AppAssets::bundledFontFamilies());
     }
 
     void semiboldFontUsesInter() {

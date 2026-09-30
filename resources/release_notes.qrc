@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/island">
+    <file alias="whats-new.md">whats-new.md</file>
+  </qresource>
+</RCC>

@@ -170,8 +170,11 @@ HudWindow::HudWindow(const QJsonObject& config)
         if (config_["idle_collapse"].toBool(true)) setCollapsed(true);
         else conceal();
     });
-    connect(qApp, &QGuiApplication::screenAdded, this, [this](QScreen* s) { watchScreen(s); placeOnScreen(); });
-    connect(qApp, &QGuiApplication::screenRemoved, this, [this] { placeOnScreen(); });
+    screenPlacementTimer_.setSingleShot(true);
+    connect(&screenPlacementTimer_, &QTimer::timeout, this, &HudWindow::placeOnScreen);
+    connect(qApp, &QGuiApplication::screenAdded, this, [this](QScreen* s) { watchScreen(s); scheduleScreenPlacement(); });
+    connect(qApp, &QGuiApplication::screenRemoved, this, &HudWindow::scheduleScreenPlacement);
+    connect(qApp, &QGuiApplication::primaryScreenChanged, this, &HudWindow::scheduleScreenPlacement);
     for (auto* screen : QGuiApplication::screens()) watchScreen(screen);
     applyConfig(config);
 }
@@ -180,21 +183,29 @@ HudWindow::~HudWindow() {
     frameTimer_.stop();
     hideTimer_.stop();
     seekTimer_.stop();
+    screenPlacementTimer_.stop();
     animations_.stopAll();
     if (QGuiApplication::platformName() == "windows") WindowsIntegration::releaseOverlayBackdrop(winId());
 }
 
 void HudWindow::watchScreen(QScreen* screen) {
-    connect(screen, &QScreen::availableGeometryChanged, this, [this] { placeOnScreen(); });
-    connect(screen, &QScreen::geometryChanged, this, [this] { placeOnScreen(); });
-    connect(screen, &QScreen::logicalDotsPerInchChanged, this, [this] { placeOnScreen(); });
+    connect(screen, &QScreen::availableGeometryChanged, this, &HudWindow::scheduleScreenPlacement);
+    connect(screen, &QScreen::geometryChanged, this, &HudWindow::scheduleScreenPlacement);
+    connect(screen, &QScreen::logicalDotsPerInchChanged, this, &HudWindow::scheduleScreenPlacement);
     connect(screen, &QScreen::refreshRateChanged, this, [this] { syncRefreshRate(); });
+}
+
+void HudWindow::scheduleScreenPlacement() {
+    // Screen removal and DPI changes arrive in bursts, before Qt has finished changing screens.
+    // Reconcile once with the final screen list, without showing an intentionally hidden HUD.
+    screenPlacementTimer_.start(0);
 }
 
 bool HudWindow::event(QEvent* event) {
     if (event->type() == QEvent::WindowBlocked || event->type() == QEvent::WindowDeactivate) cancelSeek();
     const bool handled = QWidget::event(event);
     if (event->type() == QEvent::Move || event->type() == QEvent::DevicePixelRatioChange) syncRefreshRate();
+    if (event->type() == QEvent::DevicePixelRatioChange) updateNativeRegion();
     return handled;
 }
 
@@ -234,10 +245,28 @@ void HudWindow::placeOnScreen() {
     stopAnimation("dock");
     applyDockGeometry(collapsed_ ? 1 : 0);
     syncRefreshRate();
+    restartHideTimer();
+}
+
+void HudWindow::resetPosition() {
+    auto* target = targetScreen();
+    if (!target) return;
+    auto restored = config_;
+    auto positions = restored["monitor_positions"].toObject();
+    positions.remove(target->name());
+    restored["monitor_positions"] = positions;
+    restored["monitor"] = target->name();
+    restored["anchor"] = "top_center";
+    restored["offset_y"] = 12;
+    applyConfig(restored);
+    reveal(true);
+    emit configChanged(config_);
 }
 
 void HudWindow::applyConfig(const QJsonObject& config) {
     cancelSeek();
+    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
+    hover_.clear(); setToolTip({}); setCursor(Qt::ArrowCursor);
     config_ = config;
     QFont font(config_["font_family"].toString("Inter"));
     font.setPixelSize(config_["font_size"].toInt(14));
@@ -246,6 +275,10 @@ void HudWindow::applyConfig(const QJsonObject& config) {
     if (!config_["idle_collapse"].toBool(true) || editing_) collapsed_ = false;
     placeOnScreen();
     if (isVisible()) applyNative();
+    // Turning full auto-hide off must recover an already auto-hidden (or fading) card.
+    // Manual hiding stays authoritative across settings, profiles and display changes.
+    if (autoHidden_ && !manualHidden_
+        && (config_["idle_collapse"].toBool(true) || config_["auto_hide_seconds"].toInt() == 0)) reveal();
     syncFrameTimer(); restartHideTimer(); update();
 }
 
@@ -327,14 +360,19 @@ void HudWindow::updateNativeRegion() {
 }
 void HudWindow::showEvent(QShowEvent* e) {
     QWidget::showEvent(e);
+    // A native hide/minimize can interrupt a fade. A subsequent show must not keep
+    // its last transparent frame once that animation has been cancelled.
+    if (!animations_.isRunning("appear") && !fadingOut_) setHudOpacity(1);
+    if (!animations_.isRunning("dock")) applyDockGeometry(collapsed_ ? 1 : 0);
     if (windowHandle())
         connect(windowHandle(), &QWindow::screenChanged, this, &HudWindow::syncRefreshRate, Qt::UniqueConnection);
-    syncRefreshRate(); applyNative(); syncFrameTimer();
+    syncRefreshRate(); applyNative(); syncFrameTimer(); restartHideTimer();
 }
 void HudWindow::hideEvent(QHideEvent* e) {
     cancelSeek();
     frameTimer_.stop(); hideTimer_.stop();
     animations_.stopAll();
+    fadingOut_ = false;
     coverAlpha_ = titleAlpha_ = playAlpha_ = hoverAlpha_ = 1;
     displayedArtwork_ = artwork_;
     dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
@@ -373,24 +411,34 @@ void HudWindow::reveal(bool manual) {
     if (manual) manualHidden_ = false;
     if (manualHidden_) return;
     const bool visible = isVisible();
+    autoHidden_ = false;
     fadingOut_ = false;
     stopAnimation("disappear");
-    setCollapsed(false);
-    if (!visible) setHudOpacity(config_["animations"].toObject()["appear"].toBool(true) ? 0 : 1);
-    show();
-    applyNative();
-    if (!visible || windowOpacity() < 1)
+    if (visible) setCollapsed(false);
+    else {
+        stopAnimation("dock");
+        collapsed_ = false;
+        hoverFromDock_ = false;
+        applyDockGeometry(0);
+    }
+    // Start before showEvent so it can distinguish a requested appearance from a
+    // stale opacity left by an interrupted hide. Repeated reveals keep their deadline.
+    if (!visible || (windowOpacity() < 1 && !animations_.isRunning("appear")))
         animate("appear", visible ? windowOpacity() : 0, 1, [this](double a) { setHudOpacity(a); },
             [this] { restartHideTimer(); });
+    show();
+    applyNative();
     restartHideTimer();
 }
 void HudWindow::conceal(bool manual) {
     cancelSeek();
     if (manual) manualHidden_ = true;
+    autoHidden_ = !manualHidden_;
     hideTimer_.stop(); stopAnimation("appear"); stopAnimation("dock");
-    if (isVisible()) {
+    if (isVisible() && !fadingOut_) {
         fadingOut_ = true;
-        animate("disappear", windowOpacity(), 0, [this](double a) { setHudOpacity(a); }, [this] { hide(); });
+        animate("disappear", windowOpacity(), 0, [this](double a) { setHudOpacity(a); },
+            [this] { if (fadingOut_) hide(); });
     }
 }
 void HudWindow::toggle() {
@@ -438,6 +486,7 @@ void HudWindow::setVolumeAvailable(bool available) {
 void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
     const bool changed = snapshot.sourceId != snapshot_.sourceId || snapshot.title != snapshot_.title
         || snapshot.artist != snapshot_.artist || snapshot.album != snapshot_.album;
+    const bool activity = snapshot.active && (changed || !snapshot_.active || (snapshot.playing && !snapshot_.playing));
     if (changed || !snapshot.active || !snapshot.canSeek || !std::isfinite(snapshot.duration)
         || snapshot.duration <= 0 || snapshot.duration != snapshot_.duration) cancelSeek();
     if (pendingSeek_) {
@@ -465,17 +514,19 @@ void HudWindow::setSnapshot(const MediaSnapshot& snapshot) {
     }
     if (changed) {
         animate("title", .15, 1, [this](double a) { titleAlpha_ = a; update(); });
-        if (snapshot.active && !isVisible()) reveal();
     }
     if (snapshot.playing != snapshot_.playing)
         animate("play", .25, 1, [this](double a) { playAlpha_ = a; update(); });
     snapshot_ = snapshot;
+    // Activity also wins while the old idle fade is still visible. An unchanged
+    // paused snapshot must not reopen the HUD on every media poll, nor expand a dock.
+    if (activity && (!isVisible() || fadingOut_)) reveal();
     syncFrameTimer(); update();
 }
 
 void HudWindow::paintEvent(QPaintEvent*) {
     QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
     const double scale = config_["scale"].toDouble(1);
     const int inset = qCeil(SurfaceInset * scale);
     p.translate(inset, inset);
@@ -515,7 +566,8 @@ void HudWindow::paintEvent(QPaintEvent*) {
         p.setBrush(Qt::NoBrush);
         p.setPen(QPen(ink(config_["border_color"].toString("#9B8CFF"), config_["border_opacity"].toDouble(.22)), border));
         const double borderInset = border / 2;
-        p.drawRoundedRect(card.adjusted(borderInset, borderInset, -borderInset, -borderInset), radius, radius);
+        const double innerRadius = std::max(0.0, radius - borderInset);
+        p.drawRoundedRect(card.adjusted(borderInset, borderInset, -borderInset, -borderInset), innerRadius, innerRadius);
     }
     if (dockProgress_ > 0) {
         const double visible = std::min(card.height(), config_["compact_visible_height"].toDouble(8));
@@ -653,7 +705,9 @@ void HudWindow::mousePressEvent(QMouseEvent* e) {
         dragElement_.clear();
         if (seekEnabled()) { dragElement_ = hit; previewSeekAt(point); }
     }
-    else if (!Transport.contains(hit) && hit != "progress" && hit != "volume") dragWindow_ = e->globalPosition().toPoint() - pos();
+    else if (!Transport.contains(hit) && hit != "progress" && hit != "volume") {
+        if (!config_["position_locked"].toBool(false)) dragWindow_ = e->globalPosition().toPoint() - pos();
+    }
     else dragElement_ = hit;
 }
 void HudWindow::mouseMoveEvent(QMouseEvent* e) {
@@ -666,7 +720,10 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
             {"previous", QStringLiteral("Предыдущий трек")}, {"progress", QStringLiteral("Перемотка")},
             {"volume", volumeAvailable_ ? QStringLiteral("Громкость текущего приложения. Для сайтов - всего браузера.")
                                         : QStringLiteral("У этого источника пока нет доступной звуковой сессии.")}};
-        setToolTip(tips.value(hit, QStringLiteral("Перетащите островок. Правая кнопка - меню.")));
+        const QString hint = config_["position_locked"].toBool(false)
+            ? QStringLiteral("Островок закреплён. Правая кнопка - меню.")
+            : QStringLiteral("Перетащите островок. Правая кнопка - меню.");
+        setToolTip(tips.value(hit, hint));
         setCursor(editing_ ? Qt::SizeAllCursor : Transport.contains(hit) || hit == "progress" || (hit == "volume" && volumeAvailable_) ? Qt::PointingHandCursor : Qt::ArrowCursor);
         animate("hover", 0, 1, [this](double a) { hoverAlpha_ = a; update(); });
     }
@@ -678,7 +735,7 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
         positions[dragElement_] = QJsonArray{std::clamp(target.x(), 0.0, config_["width"].toDouble() - rect.width()),
                                             std::clamp(target.y(), 0.0, config_["height"].toDouble() - rect.height())};
         config_["element_positions"] = positions; config_["layout"] = "custom"; moved_ = true; update();
-    } else if (dragWindow_) {
+    } else if (dragWindow_ && !config_["position_locked"].toBool(false)) {
         move(e->globalPosition().toPoint() - *dragWindow_);
         expandedGeometry_ = geometry();
         updateNativeRegion();
@@ -692,7 +749,8 @@ void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     if (editing_ && moved_ && dragOrigin_) emit configChanged(config_);
     else if (dragWindow_ && moved_) {
-        auto* target = QGuiApplication::screenAt(frameGeometry().center()); if (!target) target = screen();
+        auto* target = QGuiApplication::screenAt(frameGeometry().center()); if (!target) target = targetScreen();
+        if (!target) { dragWindow_.reset(); restartHideTimer(); return; }
         const auto area = target->availableGeometry(); auto positions = config_["monitor_positions"].toObject();
         positions[target->name()] = QJsonArray{std::clamp(x() - area.x(), 0, std::max(0, area.width() - width())),
                                                std::clamp(y() - area.y(), 0, std::max(0, area.height() - height()))};
@@ -762,6 +820,13 @@ void HudWindow::contextMenuEvent(QContextMenuEvent* e) {
     hideTimer_.stop();
     QMenu menu(this);
     menu.addAction(QStringLiteral("Настройки SCARP ISLAND"), this, &HudWindow::settingsRequested);
+    menu.addAction(QStringLiteral("Вернуть в исходное положение"), this, &HudWindow::resetPosition);
+    auto* locked = menu.addAction(QStringLiteral("Закрепить островок"));
+    locked->setCheckable(true); locked->setChecked(config_["position_locked"].toBool(false));
+    connect(locked, &QAction::triggered, this, [this](bool enabled) {
+        auto config = config_; config["position_locked"] = enabled;
+        applyConfig(config); emit configChanged(config_);
+    });
     auto* edit = menu.addAction(QStringLiteral("Редактировать расположение")); edit->setCheckable(true); edit->setChecked(editing_);
     connect(edit, &QAction::triggered, this, &HudWindow::editingChanged);
     menu.addAction(QStringLiteral("Скрыть островок"), this, [this] { conceal(true); });

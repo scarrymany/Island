@@ -3,6 +3,8 @@
 #include "ConfigStore.h"
 #include "HudWindow.h"
 #include "MediaBridge.h"
+#include "ReleaseNotes.h"
+#include <QPointer>
 #include "SettingsWindow.h"
 #include "SessionVolume.h"
 #include "UpdateService.h"
@@ -19,7 +21,7 @@ public:
     explicit Application(bool demo, bool background, QString configPath = {}, QObject* parent = nullptr);
     ~Application() override;
     void showSettings();
-    void capture(const QString& directory);
+    bool capture(const QString& directory);
     void writeDiagnostics(const QString& path) const;
     void shutdown();
 protected:
@@ -29,6 +31,7 @@ private:
     void setEditing(bool enabled);
     void setStatus(const QString& message);
     void setupTray();
+    void showReleaseNotes();
     void refreshProfiles();
     void playDemo(const QString& action, double value);
     void updateSettingsBackdrop();
@@ -42,6 +45,7 @@ private:
     QSystemTrayIcon tray_;
     std::unique_ptr<QMenu> trayMenu_;
     QMenu* profilesMenu_ = nullptr;
+    QPointer<ReleaseNotesDialog> releaseNotes_;
     QTimer volumeTimer_;
     MediaSnapshot latest_;
     MediaSources sources_;

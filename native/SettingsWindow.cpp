@@ -16,6 +16,7 @@
 #include <QDesktopServices>
 #include <QFileDialog>
 #include <QFontComboBox>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QFrame>
 #include <QGuiApplication>
@@ -29,10 +30,12 @@
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLinearGradient>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPushButton>
 #include <QScreen>
 #include <QScrollArea>
@@ -49,6 +52,107 @@
 #include <algorithm>
 
 namespace {
+class PresetPreview final : public QWidget {
+public:
+    PresetPreview() {
+        setObjectName("presetPreview");
+        setMinimumHeight(180);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    void setPreset(const ConfigStore::Preset& preset) {
+        config_ = preset.settings;
+        setAccessibleName(QStringLiteral("Предпросмотр пресета %1").arg(preset.name));
+        setAccessibleDescription(preset.description);
+        update();
+    }
+
+    QSize sizeHint() const override { return {360, 180}; }
+    QSize minimumSizeHint() const override { return {0, 180}; }
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        if (config_.isEmpty()) return;
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setRenderHint(QPainter::TextAntialiasing);
+        const double panelWidth = config_["width"].toDouble();
+        const double panelHeight = config_["height"].toDouble();
+        const double scale = std::min({1.0, std::max(1, width() - 12) / panelWidth, (height() - 12) / panelHeight});
+        painter.translate((width() - panelWidth * scale) / 2, (height() - panelHeight * scale) / 2);
+        painter.scale(scale, scale);
+        QLinearGradient surface(0, 0, panelWidth, panelHeight);
+        surface.setColorAt(0, QColor(config_["background"].toString()));
+        surface.setColorAt(1, QColor(config_[config_["gradient_enabled"].toBool() ? "gradient_color" : "background"].toString()));
+        painter.setBrush(surface);
+        QColor border(config_["border_color"].toString());
+        border.setAlphaF(config_["border_opacity"].toDouble());
+        const double borderWidth = config_["border_width"].toDouble();
+        painter.setPen(borderWidth > 0 ? QPen(border, borderWidth) : QPen(Qt::NoPen));
+        const double radius = config_["radius"].toDouble();
+        painter.drawRoundedRect(QRectF(0, 0, panelWidth, panelHeight), radius, radius);
+        const auto elements = Layout::elements(config_);
+        const QColor accent(config_["accent_color"].toString());
+        const QColor primary(config_["text_color"].toString());
+        const QColor secondary(config_["secondary_color"].toString());
+        for (auto it = elements.constBegin(); it != elements.constEnd(); ++it) {
+            const QRectF rect = it.value();
+            painter.save();
+            painter.setClipRect(rect);
+            if (it.key() == "cover") {
+                QLinearGradient artwork(rect.topLeft(), rect.bottomRight());
+                artwork.setColorAt(0, accent.darker(180));
+                artwork.setColorAt(1, accent.lighter(120));
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(artwork);
+                painter.drawRoundedRect(rect, 10, 10);
+                painter.setBrush(QColor(255, 255, 255, 65));
+                painter.drawEllipse(rect.adjusted(rect.width() * 0.22, rect.height() * 0.22,
+                    -rect.width() * 0.22, -rect.height() * 0.22));
+            } else if (it.key() == "progress" || it.key() == "volume") {
+                const double thickness = it.key() == "progress" ? config_["progress_height"].toDouble() : 3;
+                const QRectF track(rect.x(), rect.center().y() - thickness / 2, rect.width(), thickness);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(secondary.red(), secondary.green(), secondary.blue(), 55));
+                painter.drawRoundedRect(track, thickness / 2, thickness / 2);
+                painter.setBrush(it.key() == "progress" ? QColor(config_["progress_color"].toString()) : accent);
+                painter.drawRoundedRect(QRectF(track.topLeft(), QSizeF(track.width() * 0.42, track.height())), thickness / 2, thickness / 2);
+            } else if (it.key() == "previous" || it.key() == "play" || it.key() == "next") {
+                const QPointF center = rect.center();
+                const double direction = it.key() == "previous" ? -1.0 : 1.0;
+                QPainterPath triangle;
+                triangle.moveTo(center + QPointF(-4 * direction, -6));
+                triangle.lineTo(center + QPointF(6 * direction, 0));
+                triangle.lineTo(center + QPointF(-4 * direction, 6));
+                triangle.closeSubpath();
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(config_["icon_color"].toString()));
+                painter.drawPath(triangle);
+                if (it.key() != "play")
+                    painter.drawRect(QRectF(center.x() + (direction > 0 ? 7 : -9), center.y() - 6, 2, 12));
+            } else {
+                QString text;
+                if (it.key() == "title") text = QStringLiteral("Музыка рядом");
+                else if (it.key() == "artist") text = QStringLiteral("Любимый исполнитель");
+                else if (it.key() == "album") text = QStringLiteral("Новый альбом");
+                else if (it.key() == "source") text = QStringLiteral("Плеер");
+                else if (it.key() == "time") text = "1:24 / 3:32";
+                QFont font(config_["font_family"].toString());
+                font.setPixelSize(it.key() == "time" || it.key() == "source" ? 11 : config_["font_size"].toInt());
+                font.setWeight(it.key() == "title" ? static_cast<QFont::Weight>(config_["font_weight"].toInt()) : QFont::Normal);
+                painter.setFont(font);
+                painter.setPen(it.key() == "title" ? primary : secondary);
+                painter.drawText(rect, Qt::AlignVCenter | Qt::AlignLeft,
+                    QFontMetrics(font).elidedText(text, Qt::ElideRight, qRound(rect.width())));
+            }
+            painter.restore();
+        }
+    }
+
+private:
+    QJsonObject config_;
+};
+
 class StatusLabel final : public QLabel {
 public:
     StatusLabel() {
@@ -503,6 +607,38 @@ QComboBox* SettingsWindow::addChoice(QFormLayout* form, const QString& label, co
 void SettingsWindow::buildAppearance()
 {
     auto* page = addPage(QStringLiteral("Внешний вид"), QStringLiteral("Настройте музыкальный островок под свой рабочий стол. Результат виден сразу."));
+    auto* presets = addGroup(page, QStringLiteral("Готовые пресеты"));
+    auto* presetChoice = new SettingsChoice;
+    presetChoice->setObjectName("presetChoice");
+    presetChoice->setAccessibleName(QStringLiteral("Готовый пресет оформления"));
+    const auto availablePresets = ConfigStore::presets();
+    for (const auto& preset : availablePresets)
+        presetChoice->addItem(preset.name, preset.id);
+    presets->addRow(QStringLiteral("Пресет"), presetChoice);
+    auto* preview = new PresetPreview;
+    presets->addRow(preview);
+    auto* presetDescription = description({});
+    presetDescription->setObjectName("presetDescription");
+    presets->addRow(presetDescription);
+    const auto previewSelection = [presetChoice, preview, presetDescription, availablePresets] {
+        const int index = presetChoice->currentIndex();
+        if (index < 0 || index >= availablePresets.size()) return;
+        preview->setPreset(availablePresets[index]);
+        presetDescription->setText(availablePresets[index].description);
+    };
+    connect(presetChoice, &QComboBox::currentIndexChanged, this, previewSelection);
+    previewSelection();
+    presets->addRow(description(QStringLiteral("Выбор показывает образец. Кнопка применяет только оформление, размер и компоновку HUD. Источник, монитор, сохранённые координаты, горячие клавиши и ваши профили сохраняются.")));
+    auto* applyPreset = new QPushButton(QStringLiteral("Применить пресет"));
+    applyPreset->setObjectName("applyPreset");
+    connect(applyPreset, &QPushButton::clicked, this, [this, presetChoice] {
+        QString error;
+        if (!store_->applyPreset(presetChoice->currentData().toString(), &error))
+            reportError(error);
+        else
+            setStatus(QStringLiteral("Применён пресет: %1").arg(presetChoice->currentText()));
+    });
+    presets->addRow(applyPreset);
     auto* themes = addGroup(page, QStringLiteral("Быстрый выбор темы"));
     QList<QPushButton*> buttons;
     for (const auto& name : {"Lunar", "Midnight", "Ember", "Mono"}) {
@@ -548,6 +684,7 @@ void SettingsWindow::buildAppearance()
     controls_.insert("font_family", fonts);
     connect(fonts, &QFontComboBox::currentFontChanged, this, [this](const QFont& font) { put("font_family", font.family()); });
     text->addRow(QStringLiteral("Шрифт"), fonts);
+    text->addRow(description(QStringLiteral("Встроены шесть шрифтов с кириллицей: Inter, Manrope, Golos Text, Rubik, IBM Plex Sans и JetBrains Mono. Устанавливать их в Windows не нужно.")));
     addNumber(text, QStringLiteral("Размер текста"), "font_size", " px");
     addChoice(text, QStringLiteral("Насыщенность шрифта"), "font_weight", {
         {"400", QStringLiteral("Обычный")}, {"500", QStringLiteral("Средний")},
@@ -615,6 +752,13 @@ void SettingsWindow::buildLayout()
     for (const auto& entry : ElementNames)
         addToggle(visible, entry.second, "visible/" + entry.first);
     auto* display = addGroup(page, QStringLiteral("Монитор и положение"));
+    addToggle(display, QStringLiteral("Закрепить островок"), "position_locked");
+    display->addRow(description(QStringLiteral("Закрепление отключает перетаскивание всего островка мышью. Управление музыкой и редактирование отдельных элементов остаются доступны.")));
+    auto* resetPosition = new QPushButton(QStringLiteral("Вернуть островок на начальное место"));
+    resetPosition->setObjectName("resetPosition");
+    resetPosition->setToolTip(QStringLiteral("Сверху по центру выбранного монитора, с исходным отступом. Работает и при закреплении."));
+    connect(resetPosition, &QPushButton::clicked, this, &SettingsWindow::resetPositionRequested);
+    display->addRow(resetPosition);
     monitorChoice_ = addChoice(display, QStringLiteral("Монитор"), "monitor", {});
     addChoice(display, QStringLiteral("Привязка"), "anchor", {
         {"top_center", QStringLiteral("Сверху по центру")}, {"free", QStringLiteral("Свободное положение")}
@@ -882,6 +1026,10 @@ void SettingsWindow::buildUpdates()
     connect(updateCheck_, &QPushButton::clicked, this, &SettingsWindow::checkUpdates);
     connect(updateInstall_, &QPushButton::clicked, this, &SettingsWindow::updateInstallRequested);
     current->addRow(buttonRow({updateCheck_, updateInstall_}));
+    auto* releaseNotes = new QPushButton(QStringLiteral("Что нового в %1").arg(QString::fromLatin1(AppInfo::Version)));
+    releaseNotes->setObjectName("releaseNotes");
+    connect(releaseNotes, &QPushButton::clicked, this, &SettingsWindow::releaseNotesRequested);
+    current->addRow(releaseNotes);
 }
 
 bool SettingsWindow::put(const QString& key, const QJsonValue& value)

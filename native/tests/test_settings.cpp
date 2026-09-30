@@ -4,6 +4,7 @@
 #include "SettingsWindow.h"
 
 #include <QGraphicsOpacityEffect>
+#include <QFontComboBox>
 #include <QFontInfo>
 #include <QFrame>
 #include <QLabel>
@@ -20,6 +21,88 @@
 class SettingsTest : public QObject {
     Q_OBJECT
 private slots:
+    void presetsPreviewWithoutApplyingAndPreserveSetup() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        auto original = store.config();
+        original["source_id"] = "test.player";
+        original["monitor"] = "test.monitor";
+        original["position_locked"] = true;
+        original["startup"] = true;
+        QVERIFY(store.update(original));
+        QVERIFY(store.saveProfile("Keep"));
+        SettingsWindow settings(&store);
+        settings.show();
+        auto* choice = settings.findChild<QComboBox*>("presetChoice");
+        auto* apply = settings.findChild<QPushButton*>("applyPreset");
+        auto* description = settings.findChild<QLabel*>("presetDescription");
+        auto* preview = settings.findChild<QWidget*>("presetPreview");
+        QVERIFY(choice && apply && description && preview);
+        QCOMPARE(choice->count(), ConfigStore::presets().size());
+        for (const auto& preset : ConfigStore::presets()) {
+            choice->setCurrentIndex(choice->findData(preset.id));
+            QCOMPARE(store.config(), original);
+            QCOMPARE(description->text(), preset.description);
+            QVERIFY(preview->accessibleName().contains(preset.name));
+            QVERIFY(!preview->grab().isNull());
+        }
+        QSignalSpy changed(&store, &ConfigStore::configChanged);
+        apply->click();
+        QCOMPARE(changed.size(), 1);
+        QCOMPARE(store.config()["font_family"].toString(), QString("JetBrains Mono"));
+        for (const auto& key : {"source_id", "monitor", "position_locked", "startup"})
+            QCOMPARE(store.config()[key], original[key]);
+        QCOMPARE(store.profiles(), QStringList{"Keep"});
+        QVERIFY(store.loadProfile("Keep"));
+        QCOMPARE(store.config(), original);
+        // Closing or navigating away from a preview never applies it.
+        choice->setCurrentIndex(choice->findData("studio"));
+        settings.findChild<QListWidget*>("navigation")->setCurrentRow(1);
+        settings.close();
+        settings.show();
+        QCOMPARE(store.config(), original);
+    }
+
+    void lockAndResetAndReleaseNotesControls() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        SettingsWindow settings(&store);
+        auto* lock = settings.findChild<SettingsToggle*>("position_locked");
+        auto* reset = settings.findChild<QPushButton*>("resetPosition");
+        auto* notes = settings.findChild<QPushButton*>("releaseNotes");
+        QVERIFY(lock && reset && notes);
+        QVERIFY(!lock->isChecked());
+        lock->setChecked(true);
+        QVERIFY(store.config()["position_locked"].toBool());
+        QVERIFY(ConfigStore(store.path()).config()["position_locked"].toBool());
+        QSignalSpy resets(&settings, &SettingsWindow::resetPositionRequested);
+        QSignalSpy changelog(&settings, &SettingsWindow::releaseNotesRequested);
+        QVERIFY(reset->isEnabled());
+        reset->click();
+        reset->click();
+        QCOMPARE(resets.size(), 2);
+        QVERIFY(lock->isChecked());
+        notes->click();
+        QCOMPARE(changelog.size(), 1);
+        lock->setChecked(false);
+        QVERIFY(!store.config()["position_locked"].toBool());
+    }
+
+    void everyBundledFontIsAvailableInBothSelectors() {
+        QTemporaryDir temp;
+        ConfigStore store(temp.filePath("config.json"));
+        SettingsWindow settings(&store);
+        for (const auto* key : {"font_family", "settings_font_family"}) {
+            auto* choice = settings.findChild<QFontComboBox*>(key);
+            QVERIFY(choice);
+            for (const auto& family : AppAssets::bundledFontFamilies()) {
+                choice->setCurrentFont(QFont(family));
+                QCOMPARE(choice->currentFont().family(), family);
+                QCOMPARE(store.config()[key].toString(), family);
+            }
+        }
+    }
+
     void buttonMouseFocusDoesNotRemainOutlined_data() {
         QTest::addColumn<int>("page");
         QTest::addColumn<QString>("name");

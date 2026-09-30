@@ -108,9 +108,9 @@ int main(int argc, char* argv[]) {
     });
     if (parser.isSet("capture") || parser.isSet("smoke-test")) {
         QTimer::singleShot(3500, &controller, [&] {
-            if (parser.isSet("capture")) controller.capture(parser.value("capture"));
+            const bool captureOk = !parser.isSet("capture") || controller.capture(parser.value("capture"));
             if (parser.isSet("diagnostics")) controller.writeDiagnostics(parser.value("diagnostics"));
-            if (parser.isSet("smoke-test")) { controller.shutdown(); app.exit(0); }
+            if (parser.isSet("smoke-test")) { controller.shutdown(); app.exit(captureOk ? 0 : 2); }
         });
     }
     return app.exec();

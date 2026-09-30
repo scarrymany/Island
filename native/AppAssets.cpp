@@ -14,19 +14,28 @@ static void initializeResources() {
     Q_UNUSED(initialized);
 }
 
-QString AppAssets::settingsFontFamily() {
-    if (!qobject_cast<QGuiApplication*>(QCoreApplication::instance())) return QStringLiteral("Segoe UI");
-    static const QString family = [] {
+QStringList AppAssets::bundledFontFamilies() {
+    if (!qobject_cast<QGuiApplication*>(QCoreApplication::instance())) return {};
+    static const QStringList loaded = [] {
         initializeResources();
-        if (QFontDatabase::addApplicationFont(QStringLiteral(":/island/fonts/Manrope.ttf")) < 0)
-            qWarning() << "Cannot load the bundled Manrope font";
-        const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/island/fonts/Inter.ttf"));
-        const auto families = QFontDatabase::applicationFontFamilies(id);
-        if (!families.isEmpty()) return families.first();
-        qWarning() << "Cannot load the bundled Inter font; using Segoe UI";
-        return QStringLiteral("Segoe UI");
+        QStringList families;
+        for (const auto* file : {"Inter", "Manrope", "GolosText", "Rubik", "IBMPlexSans", "JetBrainsMono"}) {
+            const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/island/fonts/%1.ttf").arg(QString::fromLatin1(file)));
+            const auto registered = QFontDatabase::applicationFontFamilies(id);
+            if (registered.isEmpty())
+                qWarning() << "Cannot load the bundled font:" << file;
+            for (const auto& family : registered) {
+                if (!families.contains(family)) families.append(family);
+            }
+        }
+        return families;
     }();
-    return family;
+    return loaded;
+}
+
+QString AppAssets::settingsFontFamily() {
+    const auto families = bundledFontFamilies();
+    return families.contains(QStringLiteral("Inter")) ? QStringLiteral("Inter") : QStringLiteral("Segoe UI");
 }
 
 QIcon AppAssets::icon() {

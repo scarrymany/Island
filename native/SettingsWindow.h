@@ -40,6 +40,8 @@ signals:
     void sourceChanged(QString source);
     void checkUpdates();
     void updateInstallRequested();
+    void resetPositionRequested();
+    void releaseNotesRequested();
 
 protected:
     void closeEvent(QCloseEvent* event) override;

@@ -46,6 +46,7 @@ void invalidValues()
         {{"scale", QJsonValue(std::numeric_limits<double>::infinity())}},
         {{"background", "#12345"}}, {{"background", "red; color: transparent"}},
         {{"layout", "invalid"}}, {{"startup", 1}}, {{"unknown", 1}},
+        {{"position_locked", 1}}, {{"position_locked", "true"}},
         {{"visible", QJsonObject{{"cover", "yes"}}}},
         {{"visible", QJsonObject{{"unknown", false}}}},
         {{"monitor_positions", QJsonObject{{"screen", QJsonArray{true, 4}}}}},
@@ -64,6 +65,78 @@ void invalidValues()
     check(ConfigStore::validate(valid), "valid partial config accepted");
     check(valid.value("visible").toObject().value("title").toBool(), "missing toggles receive defaults");
     check(valid.value("width").toInt() == 560, "missing fields receive defaults");
+}
+
+void presetsAndPositionLock(const QString& directory)
+{
+    const QString path = QDir(directory).filePath("presets.json");
+    ConfigStore store(path);
+    check(!store.config().value("position_locked").toBool(), "position unlocked by default");
+    auto original = store.config();
+    original.insert("source_id", "qa.player");
+    original.insert("monitor", "qa.monitor");
+    original.insert("anchor", "free");
+    original.insert("offset_y", 71);
+    original.insert("monitor_positions", QJsonObject{{"qa.monitor", QJsonArray{310, 270}}, {"other", QJsonArray{20, 40}}});
+    original.insert("element_positions", QJsonObject{{"title", QJsonArray{21.5, 32.5}}});
+    original.insert("hotkey", "Ctrl+Shift+F8");
+    original.insert("startup", true);
+    original.insert("position_locked", true);
+    original.insert("click_through", true);
+    original.insert("auto_hide_seconds", 47);
+    original.insert("idle_collapse", false);
+    original.insert("settings_font_family", "Manrope");
+    original.insert("settings_font_size", 15);
+    original.insert("check_updates", false);
+    check(store.update(original), "preset protected settings fixture saved");
+    check(store.saveProfile("My snapshot"), "preset profile fixture saved");
+    check(store.saveTheme("My colors"), "preset theme fixture saved");
+    const auto saved = QJsonDocument::fromJson(readFile(path)).object();
+    const QStringList protectedFields = {"source_id", "monitor", "anchor", "offset_y", "monitor_positions", "element_positions",
+        "hotkey", "startup", "position_locked", "click_through", "auto_hide_seconds", "idle_collapse", "idle_collapse_seconds",
+        "animations", "animation_duration", "settings_font_family", "settings_font_size", "settings_background",
+        "settings_animations", "settings_animation_duration", "settings_opacity", "check_updates", "update_repository"};
+    const auto presets = ConfigStore::presets();
+    check(presets.size() >= 5, "distinct built-in presets available");
+    QStringList ids;
+    for (const auto& preset : presets) {
+        check(!preset.id.isEmpty() && !ids.contains(preset.id), "preset IDs unique and stable");
+        ids.append(preset.id);
+        check(!preset.name.isEmpty() && !preset.description.isEmpty(), "preset has name and description");
+        auto validated = preset.settings;
+        check(ConfigStore::validate(validated), "preset values satisfy config schema");
+        QString error;
+        check(store.applyPreset(preset.id, &error), "preset applied");
+        check(error.isEmpty(), "preset application has no error");
+        const auto applied = store.config();
+        for (auto it = preset.settings.constBegin(); it != preset.settings.constEnd(); ++it)
+            check(applied.value(it.key()) == it.value(), "preset appearance applied completely");
+        for (const auto& key : protectedFields) {
+            check(!preset.settings.contains(key), "preset contains no protected setup fields");
+            check(applied.value(key) == original.value(key), "preset preserves user setup");
+        }
+        const auto document = QJsonDocument::fromJson(readFile(path)).object();
+        for (const auto& key : {"profiles", "themes", "active_profile"})
+            check(document.value(key) == saved.value(key), "presets do not alter saved collections");
+        check(store.applyPreset(preset.id), "same preset can be applied repeatedly");
+        check(store.config() == applied, "preset application is idempotent");
+        check(ConfigStore(path).config() == applied, "preset and position lock persist");
+    }
+    const auto beforeInvalid = readFile(path);
+    const auto beforeInvalidConfig = store.config();
+    QString error;
+    check(!store.applyPreset("missing", &error) && !error.isEmpty(), "unknown preset fails with explanation");
+    check(readFile(path) == beforeInvalid && store.config() == beforeInvalidConfig, "unknown preset has no side effects");
+    const QString exported = QDir(directory).filePath("presets-export.json");
+    check(store.exportFile(exported), "preset export succeeds");
+    ConfigStore imported(QDir(directory).filePath("presets-import.json"));
+    check(imported.importFile(exported), "preset export imports using existing schema");
+    check(imported.config() == store.config(), "preset import roundtrip");
+    check(imported.loadProfile("My snapshot"), "existing saved profile still loads after preset import");
+    check(imported.config() == original, "saved profile retains exact original snapshot");
+    auto legacy = ConfigStore::defaults();
+    legacy.remove("position_locked");
+    check(ConfigStore::validate(legacy) && !legacy.value("position_locked").toBool(), "legacy config gains unlocked default");
 }
 
 void officialUpdateSource(const QString& directory)
@@ -463,6 +536,7 @@ int main(int argc, char** argv)
     compactConfiguration(temporary.path());
     artworkConfiguration(temporary.path());
     settingsAppearanceConfiguration(temporary.path());
+    presetsAndPositionLock(temporary.path());
     qInfo() << "Configuration checks completed. Failures:" << failures;
     return failures == 0 ? 0 : 1;
 }

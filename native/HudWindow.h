@@ -26,6 +26,7 @@ public:
     void conceal(bool manual = false);
     void toggle();
     void placeOnScreen();
+    void resetPosition();
     QMap<QString, QRectF> elementRects() const;
     const QJsonObject& config() const { return config_; }
 signals:
@@ -59,6 +60,7 @@ private:
     void syncRefreshRate();
     void restartHideTimer();
     void watchScreen(QScreen* screen);
+    void scheduleScreenPlacement();
     void animate(const QString& name, double from, double to, std::function<void(double)> callback,
                  std::function<void()> finished = {});
     void stopAnimation(const QString& name);
@@ -76,7 +78,7 @@ private:
     MediaSnapshot snapshot_;
     double volume_ = .5;
     bool volumeAvailable_ = true;
-    bool editing_ = false, manualHidden_ = false, fadingOut_ = false, moved_ = false;
+    bool editing_ = false, manualHidden_ = false, autoHidden_ = false, fadingOut_ = false, moved_ = false;
     bool collapsed_ = false, menuOpen_ = false, hoverFromDock_ = false;
     double dockProgress_ = 0;
     QRect expandedGeometry_, compactGeometry_;
@@ -90,6 +92,7 @@ private:
     double coverAlpha_ = 1, titleAlpha_ = 1, playAlpha_ = 1, hoverAlpha_ = 1;
     QChronoTimer frameTimer_;
     QTimer hideTimer_;
+    QTimer screenPlacementTimer_;
     QTimer seekTimer_;
     AnimationClock animations_;
 };

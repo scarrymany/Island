@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Island VERSION 1.0.6 LANGUAGES CXX)
+project(Island VERSION 1.1.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Island requires Windows 10 1809 or newer")
@@ -20,6 +20,7 @@ add_library(island_core STATIC
     native/SessionVolume.cpp native/SessionVolume.h
     native/WindowsIntegration.cpp native/WindowsIntegration.h
     native/UpdateService.cpp native/UpdateService.h
+    native/ReleaseNotes.cpp native/ReleaseNotes.h resources/release_notes.qrc
     native/Layout.cpp native/Layout.h
     native/HudWindow.cpp native/HudWindow.h
     native/SettingsControls.cpp native/SettingsControls.h
@@ -38,7 +39,7 @@ set_target_properties(Island PROPERTIES OUTPUT_NAME Island)
 include(CTest)
 option(ISLAND_DESKTOP_TESTS "Build compositor checks requiring an interactive Windows desktop" OFF)
 if(BUILD_TESTING)
-    foreach(test_name config layout hud platform media animation assets settings settings_controls settings_workflows session_volume)
+    foreach(test_name config layout hud platform media animation assets settings settings_controls settings_workflows session_volume release_notes)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/native/tests/test_${test_name}.cpp")
             qt_add_executable(test_${test_name} native/tests/test_${test_name}.cpp)
             target_link_libraries(test_${test_name} PRIVATE island_core Qt6::Test)

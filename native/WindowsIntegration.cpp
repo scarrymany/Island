@@ -288,9 +288,10 @@ public:
         screenClip_.TopInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(visible.top() * ratio) - top)) : 0);
         screenClip_.RightInset(clip.isValid() ? static_cast<float>(std::max(0.0, width + left - std::floor(visible.right() * ratio))) : 0);
         screenClip_.BottomInset(clip.isValid() ? static_cast<float>(std::max(0.0, height + top - std::floor(visible.bottom() * ratio))) : 0);
-        // Composition clips pixels; the HWND region independently clips native hit testing.
-        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1,
-            static_cast<int>(std::lround(radius * ratio * 2)), static_cast<int>(std::lround(radius * ratio * 2)));
+        // The Composition geometry owns rounded-edge coverage. A binary rounded
+        // HWND region would cut off its antialiased boundary pixels. Keep only the
+        // rectangular screen constraint; this surface is already input-transparent.
+        HRGN region = CreateRectRgn(0, 0, width, height);
         if (!region) return false;
         if (clip.isValid()) {
             HRGN clipping = clippedOut_ ? CreateRectRgn(0, 0, 0, 0)
@@ -633,10 +634,12 @@ bool WindowsIntegration::updateOverlayRegion(WId window, const QRectF& cardBound
     const int offsetY = origin.y - frame.top;
     const auto x = [devicePixelRatio, offsetX](double value) { return static_cast<int>(std::floor(value * devicePixelRatio)) + offsetX; };
     const auto y = [devicePixelRatio, offsetY](double value) { return static_cast<int>(std::floor(value * devicePixelRatio)) + offsetY; };
-    HRGN desired = CreateRoundRectRgn(x(cardBounds.left()), y(cardBounds.top()),
-        static_cast<int>(std::ceil(cardBounds.right() * devicePixelRatio)) + offsetX + 1,
-        static_cast<int>(std::ceil(cardBounds.bottom() * devicePixelRatio)) + offsetY + 1,
-        static_cast<int>(std::lround(radius * devicePixelRatio * 2)), static_cast<int>(std::lround(radius * devicePixelRatio * 2)));
+    // The layered Qt window paints the rounded contour with per-pixel alpha.
+    // SetWindowRgn is binary and must not trim that antialiasing. Transparent
+    // pixels still pass hit tests through to the window underneath on Windows.
+    HRGN desired = CreateRectRgn(x(cardBounds.left()), y(cardBounds.top()),
+        static_cast<int>(std::ceil(cardBounds.right() * devicePixelRatio)) + offsetX,
+        static_cast<int>(std::ceil(cardBounds.bottom() * devicePixelRatio)) + offsetY);
     if (!desired) return false;
     if (clipBounds.isValid()) {
         HRGN clip = CreateRectRgn(static_cast<int>(std::ceil(clipBounds.left() * devicePixelRatio)) + offsetX,

@@ -74,6 +74,10 @@ if (!(Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI (gh) is
 if (!$PSCmdlet.ShouldProcess("$repository $Tag", 'Create a release draft, upload packages, verify remote SHA-256 and publish')) { return }
 
 $assets = @($assetNames | ForEach-Object { Join-Path $dist $_ }) + $manifestPath
+$screenshotDirectory = Join-Path $workspace 'artifacts/screenshots'
+if (Test-Path -LiteralPath $screenshotDirectory -PathType Container) {
+    $assets += @(Get-ChildItem -LiteralPath $screenshotDirectory -Filter '*.png' -File | ForEach-Object { $_.FullName })
+}
 $notes = Join-Path $workspace "docs/releases/$Tag.md"
 $notesArguments = if (Test-Path -LiteralPath $notes -PathType Leaf) { @('--notes-file', $notes) } else { @('--generate-notes') }
 & gh release create $Tag @assets --repo $repository --verify-tag @notesArguments --title "SCARP ISLAND $Tag" --draft

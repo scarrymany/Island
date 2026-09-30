@@ -39,6 +39,16 @@ const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
     "border_width", "border_opacity", "compact_radius", "compact_opacity",
     "artwork_background", "artwork_background_strength"
 };
+// Presets are curated HUD appearances, never snapshots of a user's setup.
+// Keep this explicit allowlist separate from themes/profiles for import compatibility.
+const QSet<QString> PresetFields = {
+    "width", "height", "scale", "cover_size", "radius", "opacity", "blur",
+    "background", "gradient_enabled", "gradient_color", "artwork_background", "artwork_background_strength",
+    "text_color", "secondary_color", "accent_color", "progress_color", "progress_height",
+    "icon_color", "icon_size", "font_family", "font_size", "font_weight", "spacing", "layout", "visible",
+    "compact_width", "compact_height", "compact_visible_height", "compact_radius", "compact_opacity", "compact_background",
+    "border_width", "border_opacity", "border_color"
+};
 const QMap<QString, QPair<double, double>> NumericRanges = {
     {"width", {260, 2000}}, {"height", {64, 600}}, {"scale", {0.5, 2.5}},
     {"cover_size", {24, 240}}, {"radius", {0, 160}}, {"opacity", {0.1, 1}},
@@ -192,7 +202,7 @@ QJsonObject ConfigStore::defaults()
         {"spacing", 16}, {"layout", "island"}, {"visible", visible}, {"element_positions", QJsonObject{}},
         {"animations", animations}, {"animation_duration", 260}, {"monitor", ""},
         {"monitor_positions", QJsonObject{}}, {"anchor", "top_center"}, {"offset_y", 12},
-        {"auto_hide_seconds", 0}, {"hotkey", "Ctrl+Alt+M"}, {"click_through", false}, {"startup", false},
+        {"auto_hide_seconds", 0}, {"hotkey", "Ctrl+Alt+M"}, {"click_through", false}, {"startup", false}, {"position_locked", false},
         {"idle_collapse", true}, {"idle_collapse_seconds", 3},
         {"compact_width", 156}, {"compact_height", 32}, {"compact_visible_height", 8},
         {"compact_radius", 16}, {"compact_opacity", 0.94}, {"compact_background", "#10121B"},
@@ -202,6 +212,78 @@ QJsonObject ConfigStore::defaults()
         {"settings_animations", true}, {"settings_animation_duration", 200}, {"settings_font_family", "Inter"},
         {"settings_blur", true}, {"update_repository", QString::fromLatin1(AppInfo::Repository)}, {"check_updates", true}
     };
+}
+
+QList<ConfigStore::Preset> ConfigStore::presets()
+{
+    const auto base = defaults();
+    const auto appearance = [&base](const QJsonObject& overrides, const QJsonObject& visibility = {}) {
+        QJsonObject settings;
+        for (const auto& key : PresetFields)
+            settings.insert(key, base.value(key));
+        for (auto it = overrides.constBegin(); it != overrides.constEnd(); ++it) {
+            if (PresetFields.contains(it.key()))
+                settings.insert(it.key(), it.value());
+        }
+        auto visible = base.value("visible").toObject();
+        for (auto it = visibility.constBegin(); it != visibility.constEnd(); ++it)
+            visible.insert(it.key(), it.value());
+        settings.insert("visible", visible);
+        return settings;
+    };
+    return {
+        {"lunar", QStringLiteral("Lunar · классический"),
+            QStringLiteral("Универсальный островок: обложка, все основные кнопки и мягкий фиолетовый акцент. Inter, 560 × 132."),
+            appearance({})},
+        {"compact", QStringLiteral("Compact · меньше места"),
+            QStringLiteral("Небольшая панель для работы: компактная обложка, управление и прогресс без таймера и громкости. Rubik, 420 × 112."),
+            appearance({{"width", 420}, {"height", 112}, {"cover_size", 56}, {"spacing", 12}, {"radius", 24},
+                {"font_family", "Rubik"}, {"font_size", 13}, {"icon_size", 16},
+                {"background", "#101C21"}, {"gradient_color", "#173A3D"}, {"accent_color", "#71DBC8"},
+                {"progress_color", "#71DBC8"}, {"secondary_color", "#A0C1BC"}, {"compact_background", "#101C21"},
+                {"compact_width", 124}, {"border_color", "#71DBC8"}}, {{"time", false}, {"volume", false}, {"source", false}})},
+        {"focus", QStringLiteral("Focus · светлый"),
+            QStringLiteral("Спокойная светлая панель без обложки и лишних подписей: крупнее название, ясный контраст. Golos Text, 520 × 120."),
+            appearance({{"width", 520}, {"height", 120}, {"spacing", 16}, {"radius", 20}, {"opacity", 0.98},
+                {"font_family", "Golos Text"}, {"font_size", 15}, {"font_weight", 500}, {"artwork_background", false},
+                {"gradient_enabled", false}, {"background", "#F2F0E9"}, {"gradient_color", "#F2F0E9"},
+                {"text_color", "#242C31"}, {"secondary_color", "#59666D"}, {"icon_color", "#242C31"},
+                {"accent_color", "#306C61"}, {"progress_color", "#306C61"}, {"border_width", 1.0},
+                {"border_color", "#7B8A85"}, {"border_opacity", 0.35}, {"compact_background", "#F2F0E9"}},
+                {{"cover", false}, {"source", false}})},
+        {"studio", QStringLiteral("Studio · музыкальная карточка"),
+            QStringLiteral("Вертикальная карточка с большой обложкой, альбомом и отдельным рядом управления. IBM Plex Sans, 460 × 280."),
+            appearance({{"width", 460}, {"height", 280}, {"cover_size", 116}, {"spacing", 20}, {"radius", 28},
+                {"layout", "stacked"}, {"font_family", "IBM Plex Sans"}, {"font_size", 16}, {"icon_size", 22},
+                {"background", "#241B1A"}, {"gradient_color", "#493129"}, {"accent_color", "#F5B58C"},
+                {"progress_color", "#F5B58C"}, {"text_color", "#FFF4EA"}, {"icon_color", "#FFF4EA"},
+                {"secondary_color", "#C4AAA0"}, {"compact_background", "#241B1A"}, {"border_color", "#F5B58C"}},
+                {{"album", true}})},
+        {"terminal", QStringLiteral("Terminal · моноширинный"),
+            QStringLiteral("Строгая тёмная панель с моноширинным текстом, зелёным акцентом и тонким контуром. JetBrains Mono, 620 × 132."),
+            appearance({{"width", 620}, {"radius", 12}, {"font_family", "JetBrains Mono"}, {"font_size", 13},
+                {"font_weight", 500}, {"artwork_background", false}, {"gradient_enabled", false},
+                {"background", "#111815"}, {"gradient_color", "#111815"}, {"accent_color", "#A0E8B5"},
+                {"progress_color", "#A0E8B5"}, {"text_color", "#EAF4EB"}, {"icon_color", "#EAF4EB"},
+                {"secondary_color", "#9CAE9F"}, {"border_width", 1.0}, {"border_opacity", 0.4},
+                {"border_color", "#A0E8B5"}, {"compact_background", "#111815"}, {"compact_radius", 6}},
+                {{"cover", false}, {"source", false}})}
+    };
+}
+
+bool ConfigStore::applyPreset(const QString& id, QString* error)
+{
+    for (const auto& preset : presets()) {
+        if (preset.id != id)
+            continue;
+        auto config = config_;
+        for (auto it = preset.settings.constBegin(); it != preset.settings.constEnd(); ++it) {
+            if (PresetFields.contains(it.key()))
+                config.insert(it.key(), it.value());
+        }
+        return update(config, error);
+    }
+    return fail(error, QStringLiteral("Пресет не найден"));
 }
 
 QPair<double, double> ConfigStore::numericRange(const QString& field)

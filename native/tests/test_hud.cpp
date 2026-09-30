@@ -14,6 +14,7 @@
 #include <QScreen>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <algorithm>
 
 class HudTest : public QObject {
     Q_OBJECT
@@ -468,6 +469,209 @@ private slots:
         MediaSnapshot media; media.active = true; media.title = "New track"; hud.setSnapshot(media);
         QVERIFY(!hud.isVisible()); hud.toggle(); QVERIFY(hud.isVisible());
     }
+    void automaticHideRecoversOnMeaningfulActivity_data() {
+        QTest::addColumn<QString>("activity");
+        QTest::addColumn<bool>("duringFade");
+        for (const auto* activity : {"track", "resume", "reactivate"}) {
+            QTest::newRow(qPrintable(QString(activity) + "-hidden")) << QString(activity) << false;
+            QTest::newRow(qPrintable(QString(activity) + "-fading")) << QString(activity) << true;
+        }
+    }
+    void automaticHideRecoversOnMeaningfulActivity() {
+        QFETCH(QString, activity);
+        QFETCH(bool, duringFade);
+        auto c = config(); c["idle_collapse"] = false;
+        auto effects = c["animations"].toObject();
+        effects["disappear"] = duringFade; effects["appear"] = true;
+        c["animations"] = effects; c["animation_duration"] = 300;
+        QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = activity != "reactivate";
+        media.title = "Same track"; media.sourceId = "Player";
+        hud.setSnapshot(media); hud.reveal();
+        QTRY_VERIFY_WITH_TIMEOUT(hud.windowOpacity() > .99, 700);
+        hud.conceal();
+        if (duringFade) { QTest::qWait(70); QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() < .99); }
+        else QVERIFY(!hud.isVisible());
+        if (activity == "track") media.title = "Next track";
+        else if (activity == "resume") media.playing = true;
+        else media.active = true;
+        hud.setSnapshot(media);
+        QTest::qWait(400);
+        QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+    }
+    void unchangedMediaPollingDoesNotUndoAutomaticHide() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.title = "Same track";
+        hud.setSnapshot(media); hud.reveal(); hud.conceal();
+        QVERIFY(!hud.isVisible());
+        for (int poll = 0; poll < 4; ++poll) {
+            media.position += 1;
+            hud.setSnapshot(media);
+            QVERIFY(!hud.isVisible());
+        }
+    }
+    void manualHideSurvivesActivityAndDisplayChangesDuringFade() {
+        auto c = config(); c["idle_collapse"] = false;
+        auto effects = c["animations"].toObject(); effects["disappear"] = true;
+        c["animations"] = effects; c["animation_duration"] = 250;
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.title = "Track";
+        hud.setSnapshot(media); hud.reveal(); hud.conceal(true);
+        QTest::qWait(50);
+        media.title = "New track"; media.playing = true; hud.setSnapshot(media);
+        c["idle_collapse"] = true; hud.applyConfig(c);
+        auto* screen = QGuiApplication::primaryScreen();
+        QVERIFY(QMetaObject::invokeMethod(screen, "availableGeometryChanged", Qt::DirectConnection,
+            Q_ARG(QRect, screen->availableGeometry())));
+        QTest::qWait(350);
+        QVERIFY(!hud.isVisible());
+        media.active = false; hud.setSnapshot(media);
+        media.active = true; hud.setSnapshot(media);
+        hud.placeOnScreen();
+        QVERIFY(!hud.isVisible());
+        hud.toggle(); QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+    }
+    void disablingAutomaticHideRecoversTheCard_data() {
+        QTest::addColumn<bool>("enableDock");
+        QTest::newRow("disable-timer") << false;
+        QTest::newRow("enable-dock") << true;
+    }
+    void disablingAutomaticHideRecoversTheCard() {
+        QFETCH(bool, enableDock);
+        auto c = config(); c["idle_collapse"] = false; c["auto_hide_seconds"] = 1;
+        QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
+        HudWindow hud(c); hud.reveal();
+        QTRY_VERIFY_WITH_TIMEOUT(!hud.isVisible(), 1800);
+        if (enableDock) c["idle_collapse"] = true;
+        else c["auto_hide_seconds"] = 0;
+        hud.applyConfig(c);
+        QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+        hud.conceal(true); hud.applyConfig(c);
+        QVERIFY(!hud.isVisible());
+    }
+    void rapidVisibilityReversalsCannotLeaveAStaleHide() {
+        auto c = config(); c["idle_collapse"] = false;
+        auto effects = c["animations"].toObject(); effects["appear"] = effects["disappear"] = true;
+        c["animations"] = effects; c["animation_duration"] = 300;
+        QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
+        HudWindow hud(c);
+        for (int i = 0; i < 4; ++i) {
+            hud.reveal(true); QTest::qWait(35);
+            hud.conceal(true); QTest::qWait(25);
+        }
+        hud.reveal(true);
+        QTest::qWait(400);
+        QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+    }
+    void nativeHideDuringAppearanceCannotLeaveTransparentShow() {
+        auto c = config(); c["idle_collapse"] = false;
+        auto effects = c["animations"].toObject(); effects["appear"] = true;
+        c["animations"] = effects; c["animation_duration"] = 400;
+        HudWindow hud(c); hud.reveal();
+        QTest::qWait(40); QVERIFY(hud.windowOpacity() < .99);
+        hud.hide(); hud.show();
+        QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+        QTest::qWait(450);
+        QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+    }
+    void positionLockPreservesPlaybackSeekAndVolume() {
+        auto c = config(); c["position_locked"] = true; c["idle_collapse"] = false;
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        hud.setSnapshot(media); hud.reveal();
+        const QRect initial = hud.geometry();
+        const QPoint header(hud.width() / 2, 15);
+        QSignalSpy changes(&hud, &HudWindow::configChanged);
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QSignalSpy volume(&hud, &HudWindow::volumeChanged);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header);
+        QTest::mouseMove(&hud, header + QPoint(25, 20));
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, header + QPoint(25, 20));
+        QCOMPARE(hud.geometry(), initial); QCOMPARE(changes.size(), 0);
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "play"));
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "volume"));
+        QCOMPARE(commands.size(), 2);
+        QCOMPARE(commands.at(0).first().toString(), QString("play_pause"));
+        QCOMPARE(commands.at(1).first().toString(), QString("seek"));
+        QCOMPARE(volume.size(), 1); QCOMPARE(hud.geometry(), initial);
+    }
+    void positionLockStillAllowsDeliberateLayoutEditing() {
+        auto c = config(); c["position_locked"] = true;
+        HudWindow hud(c); hud.setEditing(true);
+        const QRect initial = hud.geometry();
+        const QRectF title = hud.elementRects()["title"];
+        const QPoint start = point(hud, "title");
+        QSignalSpy changes(&hud, &HudWindow::configChanged);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(&hud, start + QPoint(12, 10));
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, start + QPoint(12, 10));
+        QCOMPARE(changes.size(), 1); QCOMPARE(hud.geometry(), initial);
+        QVERIFY(hud.elementRects()["title"].topLeft() != title.topLeft());
+        QVERIFY(hud.config()["position_locked"].toBool());
+    }
+    void enablingPositionLockCancelsAnInFlightWindowDrag() {
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c); hud.reveal();
+        const QPoint header(hud.width() / 2, 15);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header);
+        QTest::mouseMove(&hud, header + QPoint(15, 10));
+        c["position_locked"] = true; hud.applyConfig(c);
+        const QRect locked = hud.geometry();
+        QSignalSpy changes(&hud, &HudWindow::configChanged);
+        QTest::mouseMove(&hud, header + QPoint(55, 30));
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, header + QPoint(55, 30));
+        QCOMPARE(hud.geometry(), locked); QCOMPARE(changes.size(), 0);
+    }
+    void resettingPositionRecoversHiddenHudAndPreservesOtherMonitors() {
+        auto c = config(); c["idle_collapse"] = false; c["position_locked"] = true;
+        auto* screen = QGuiApplication::primaryScreen();
+        c["monitor"] = screen->name(); c["anchor"] = "free"; c["offset_y"] = 300;
+        c["monitor_positions"] = QJsonObject{{screen->name(), QJsonArray{90, 80}},
+            {"Other saved monitor", QJsonArray{240, 180}}};
+        HudWindow hud(c); hud.reveal(); hud.conceal(true);
+        QSignalSpy changes(&hud, &HudWindow::configChanged);
+        hud.resetPosition();
+        QVERIFY(hud.isVisible()); QVERIFY(hud.windowOpacity() > .99);
+        QCOMPARE(hud.config()["anchor"].toString(), QString("top_center"));
+        QCOMPARE(hud.config()["offset_y"].toInt(), 12);
+        QVERIFY(hud.config()["position_locked"].toBool());
+        const auto positions = hud.config()["monitor_positions"].toObject();
+        QVERIFY(!positions.contains(screen->name()));
+        QCOMPARE(positions["Other saved monitor"].toArray(), (QJsonArray{240, 180}));
+        const QRect area = screen->availableGeometry();
+        QCOMPARE(hud.x(), area.x() + std::max(0, (area.width() - hud.width()) / 2));
+        QCOMPARE(hud.y(), area.y() + std::min(12, std::max(0, area.height() - hud.height())));
+        QCOMPARE(changes.size(), 1);
+    }
+    void roundedEdgesContainPartialAlphaAtEveryScale_data() {
+        QTest::addColumn<double>("scale");
+        QTest::newRow("small") << 0.75;
+        QTest::newRow("normal") << 1.0;
+        QTest::newRow("fractional") << 1.25;
+        QTest::newRow("large") << 1.75;
+    }
+    void roundedEdgesContainPartialAlphaAtEveryScale() {
+        QFETCH(double, scale);
+        auto c = backgroundConfig(); c["scale"] = scale; c["opacity"] = 1;
+        c["artwork_background"] = false; c["border_width"] = 0; c["radius"] = 30;
+        HudWindow hud(c); hud.reveal();
+        const QImage image = hud.grab().toImage();
+        const double ratio = image.devicePixelRatio();
+        const int inset = qRound(qCeil(14 * scale) * ratio);
+        const int radius = qRound(30 * scale * ratio);
+        int partial = 0;
+        for (int y = inset; y < inset + radius; ++y)
+            for (int x = inset; x < inset + radius; ++x) {
+                const int alpha = image.pixelColor(x, y).alpha();
+                if (alpha > 0 && alpha < 255) ++partial;
+            }
+        QVERIFY2(partial > radius / 2, "Rounded contour lost its per-pixel antialiasing");
+        QCOMPARE(image.pixelColor(inset, inset).alpha(), 0);
+        QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2).alpha(), 255);
+    }
     void dragElementIsSaved() {
         HudWindow hud(config()); hud.setEditing(true);
         QSignalSpy changed(&hud, &HudWindow::configChanged);
@@ -582,6 +786,36 @@ private slots:
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
         QEvent leave(QEvent::Leave); QApplication::sendEvent(&hud, &leave);
         QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expandedWidth, 1800);
+    }
+    void screenRelayoutDuringExpansionRestartsIdleTimer() {
+        auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
+        QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
+        HudWindow hud(c); hud.reveal(); const QRect expanded = hud.geometry();
+        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        auto effects = c["animations"].toObject(); effects["dock"] = true;
+        c["animations"] = effects; c["animation_duration"] = 400;
+        hud.applyConfig(c); hud.reveal(true); QTest::qWait(40);
+        auto* screen = QGuiApplication::primaryScreen();
+        QVERIFY(QMetaObject::invokeMethod(screen, "availableGeometryChanged", Qt::DirectConnection,
+            Q_ARG(QRect, screen->availableGeometry())));
+        QTRY_COMPARE_WITH_TIMEOUT(hud.geometry(), expanded, 250);
+        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        QVERIFY(hud.isVisible());
+    }
+    void mediaInactivityAndResumeKeepDockHandleAvailable() {
+        auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
+        QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
+        HudWindow hud(c);
+        MediaSnapshot media; media.active = true; media.playing = true; media.title = "Track";
+        hud.setSnapshot(media); hud.reveal(); const QRect expanded = hud.geometry();
+        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        const QRect docked = hud.geometry();
+        media.active = false; media.playing = false; hud.setSnapshot(media);
+        QVERIFY(hud.isVisible()); QCOMPARE(hud.geometry(), docked);
+        media.active = true; media.playing = true; hud.setSnapshot(media);
+        QVERIFY(hud.isVisible()); QCOMPARE(hud.geometry(), docked);
+        QVERIFY(hud.windowOpacity() > .99);
+        hud.reveal(true); QCOMPARE(hud.geometry(), expanded);
     }
     void slowExpansionFinishesBeforeIdleTimerStarts() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;

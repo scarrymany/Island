@@ -1,5 +1,6 @@
 #include "Application.h"
 #include "AppAssets.h"
+#include "AppInfo.h"
 
 #include <QApplication>
 #include <QBuffer>
@@ -7,6 +8,8 @@
 #include <QDir>
 #include <QEvent>
 #include <QFile>
+#include <QFileInfo>
+#include <QListWidget>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -15,6 +18,9 @@
 #include <QPainter>
 #include <QSaveFile>
 #include <QScreen>
+#include <QScrollArea>
+#include <QScrollBar>
+#include <QStackedWidget>
 #include <QTimer>
 
 namespace {
@@ -51,6 +57,8 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(&settings_, &SettingsWindow::editLayoutChanged, this, &Application::setEditing);
     connect(&hud_, &HudWindow::editingChanged, this, &Application::setEditing);
     connect(&hud_, &HudWindow::settingsRequested, this, &Application::showSettings);
+    connect(&settings_, &SettingsWindow::resetPositionRequested, &hud_, &HudWindow::resetPosition);
+    connect(&settings_, &SettingsWindow::releaseNotesRequested, this, &Application::showReleaseNotes);
     connect(&windows_, &WindowsIntegration::activated, &hud_, &HudWindow::toggle);
     connect(&media_, &MediaBridge::snapshotChanged, this, [this](const MediaSnapshot& snapshot) {
         if (stopping_) return;
@@ -123,6 +131,10 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     hud_.reveal();
     if (!background) showSettings();
     if (!store_.loadError().isEmpty()) setStatus(store_.loadError());
+    if (!demo_) QTimer::singleShot(800, this, [this] {
+        const ReleaseNotesState state(QFileInfo(store_.path()).dir().filePath("release-state.json"));
+        if (!stopping_ && state.shouldShow(QString::fromLatin1(AppInfo::Version))) showReleaseNotes();
+    });
     connect(qApp, &QCoreApplication::aboutToQuit, this, &Application::shutdown);
 }
 
@@ -137,6 +149,7 @@ Application::~Application() {
 void Application::shutdown() {
     if (stopping_) return;
     stopping_ = true;
+    if (releaseNotes_) releaseNotes_->close();
     updates_.cancel();
     volumeTimer_.stop(); sessionVolume_.stop(); media_.stop(); tray_.hide(); hud_.hide(); settings_.hide();
 }
@@ -145,6 +158,8 @@ void Application::setupTray() {
     trayMenu_ = std::make_unique<QMenu>();
     trayMenu_->addAction(QStringLiteral("Открыть настройки"), this, &Application::showSettings);
     trayMenu_->addAction(QStringLiteral("Показать / скрыть островок"), &hud_, &HudWindow::toggle);
+    trayMenu_->addAction(QStringLiteral("Вернуть островок в исходное положение"), &hud_, &HudWindow::resetPosition);
+    trayMenu_->addAction(QStringLiteral("Что нового в %1").arg(AppInfo::Version), this, &Application::showReleaseNotes);
     auto* editing = trayMenu_->addAction(QStringLiteral("Редактировать расположение")); editing->setCheckable(true);
     connect(editing, &QAction::triggered, this, &Application::setEditing);
     connect(trayMenu_.get(), &QMenu::aboutToShow, this, [this, editing] { editing->setChecked(hud_.editing()); refreshProfiles(); });
@@ -232,10 +247,78 @@ void Application::playDemo(const QString& action, double value) {
     if (action == "previous" || action == "next") { latest_.position = 0; latest_.title = latest_.title == "After Hours" ? "Soft Landing" : "After Hours"; }
     hud_.setSnapshot(latest_);
 }
-void Application::capture(const QString& directory) {
-    QDir().mkpath(directory);
-    hud_.grab().save(QDir(directory).filePath("hud.png"));
-    settings_.grab().save(QDir(directory).filePath("settings.png"));
+void Application::showReleaseNotes() {
+    if (stopping_) return;
+    if (!releaseNotes_) {
+        releaseNotes_ = new ReleaseNotesDialog(&settings_);
+        releaseNotes_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(releaseNotes_, &QDialog::finished, this, [this] {
+            if (demo_) return;
+            const ReleaseNotesState state(QFileInfo(store_.path()).dir().filePath("release-state.json"));
+            QString error;
+            if (!state.markRead(QString::fromLatin1(AppInfo::Version), &error)) setStatus(error);
+        });
+    }
+    releaseNotes_->showNormal(); releaseNotes_->raise(); releaseNotes_->activateWindow();
+}
+
+bool Application::capture(const QString& directory) {
+    if (!QDir().mkpath(directory)) return false;
+    // Demo capture renders real application widgets with deterministic state.
+    // Never modify the user's settings when capturing a live media session.
+    if (demo_) {
+        auto config = store_.config();
+        config["idle_collapse"] = false;
+        config["auto_hide_seconds"] = 0;
+        config["settings_animations"] = false;
+        auto animations = config["animations"].toObject();
+        for (auto it = animations.begin(); it != animations.end(); ++it) it.value() = false;
+        config["animations"] = animations;
+        if (!store_.update(config)) return false;
+        hud_.reveal(true);
+        settings_.resize(1080, 800);
+        settings_.showNormal();
+    }
+    QCoreApplication::processEvents();
+    const QDir output(directory);
+    bool ok = hud_.grab().save(output.filePath("hud.png"));
+    if (demo_) {
+        const auto captureConfig = store_.config();
+        for (const auto& preset : ConfigStore::presets()) {
+            if (!store_.applyPreset(preset.id)) return false;
+            hud_.reveal(true);
+            QCoreApplication::processEvents();
+            ok = hud_.grab().save(output.filePath("hud-" + preset.id + ".png")) && ok;
+        }
+        if (!store_.update(captureConfig)) return false;
+    }
+    auto* navigation = settings_.findChild<QListWidget*>("navigation");
+    const int originalPage = navigation ? navigation->currentRow() : 0;
+    const QList<QPair<int, QString>> captures = {{0, "settings.png"}, {1, "position.png"}, {4, "profiles.png"}, {5, "system.png"}, {6, "updates.png"}};
+    for (const auto& capture : captures) {
+        if (navigation) navigation->setCurrentRow(capture.first);
+        QCoreApplication::processEvents();
+        if (capture.first == 1) {
+            auto* pages = settings_.findChild<QStackedWidget*>("settingsPages");
+            if (auto* page = pages ? qobject_cast<QScrollArea*>(pages->currentWidget()) : nullptr)
+                page->verticalScrollBar()->setValue(page->verticalScrollBar()->maximum());
+            QCoreApplication::processEvents();
+        }
+        ok = settings_.grab().save(output.filePath(capture.second)) && ok;
+    }
+    ReleaseNotesDialog notes;
+    notes.show();
+    QCoreApplication::processEvents();
+    ok = notes.grab().save(output.filePath("whats-new.png")) && ok;
+    notes.close();
+    if (navigation) navigation->setCurrentRow(originalPage);
+    QFile description(output.filePath("capture-info.txt"));
+    if (!description.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    description.write(QString("SCARP ISLAND %1\nPlatform: %2\nDemo: %3\n"
+        "Actual Qt application widget captures. Demo media is synthetic.\n"
+        "Widget captures do not verify Windows desktop compositor blur.\n")
+        .arg(AppInfo::Version, QGuiApplication::platformName(), demo_ ? "yes" : "no").toUtf8());
+    return ok;
 }
 void Application::writeDiagnostics(const QString& path) const {
     QJsonArray sources;
