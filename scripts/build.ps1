@@ -17,7 +17,12 @@ if ($LASTEXITCODE) { throw 'Build failed.' }
 $env:PATH = (Join-Path $QtPath 'bin') + ';' + $env:PATH
 $ctest = Join-Path (Split-Path $cmake) 'ctest.exe'
 & $ctest --test-dir $build -C $Configuration --output-on-failure
-if ($LASTEXITCODE) { throw 'Tests failed.' }
+$testExitCode = $LASTEXITCODE
+Get-ChildItem -LiteralPath $build -Filter 'test_*.txt' -File | ForEach-Object {
+    Write-Output "=== $($_.Name) ==="
+    Get-Content -LiteralPath $_.FullName
+}
+if ($testExitCode) { throw 'Tests failed. See the QtTest reports above.' }
 & $cmake --install $build --config $Configuration --prefix (Join-Path $workspace 'dist\Island')
 if ($LASTEXITCODE) { throw 'Deployment failed.' }
 if ($Package) {
