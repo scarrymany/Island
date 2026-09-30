@@ -17,6 +17,7 @@
 #include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <cmath>
 
 class SettingsTest : public QObject {
     Q_OBJECT
@@ -320,8 +321,10 @@ private slots:
         navigation->setCurrentRow(3);
         QVERIFY(opacity->opacity() < 1.0);
         QTest::qWait(35);
+        const double interruptedOpacity = opacity->opacity();
         navigation->setCurrentRow(5);
         QCOMPARE(pages->currentIndex(), 5);
+        QVERIFY(std::abs(opacity->opacity() - interruptedOpacity) < 0.001);
         settings.resize(900, 600);
         QCOMPARE(opacity->opacity(), 1.0);
         navigation->setCurrentRow(1);

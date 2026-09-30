@@ -2,6 +2,7 @@
 #include "Layout.h"
 #include <QJsonArray>
 #include <QtTest>
+#include <limits>
 
 class LayoutTest : public QObject {
     Q_OBJECT
@@ -29,6 +30,8 @@ private slots:
     void formatsTime() {
         QCOMPARE(Layout::formatTime(-3), QString("0:00"));
         QCOMPARE(Layout::formatTime(3661), QString("1:01:01"));
+        QCOMPARE(Layout::formatTime(std::numeric_limits<double>::infinity()), QString("0:00"));
+        QCOMPARE(Layout::formatTime(1e100), QString("596523:14:07"));
     }
     void collapsedCardMeetsPhysicalMonitorEdge() {
         QCOMPARE(Layout::dockGeometry({-1920, -1080, 1920, 1080}, {184, 60}, 14, 8),

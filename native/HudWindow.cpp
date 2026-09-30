@@ -458,7 +458,9 @@ void HudWindow::restartHideTimer() {
         hideTimer_.start(delay * 1000);
 }
 void HudWindow::syncFrameTimer() {
-    if (isVisible() && snapshot_.playing && dockProgress_ < 1) {
+    const auto visible = config_["visible"].toObject();
+    if (isVisible() && snapshot_.playing && dockProgress_ < 1
+        && (visible["time"].toBool(true) || (visible["progress"].toBool(true) && snapshot_.duration > 0))) {
         const auto interval = config_["animations"].toObject()["progress"].toBool(true)
             ? animations_.frameInterval() : std::chrono::seconds(1);
         if (frameTimer_.interval() != interval) frameTimer_.setInterval(interval);

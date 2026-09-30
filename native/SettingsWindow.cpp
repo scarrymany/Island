@@ -1424,10 +1424,14 @@ void SettingsWindow::updateMotion()
 void SettingsWindow::animatePage()
 {
     if (!pageOpacity_) return;
-    finishPageAnimation();
-    if (!isVisible() || !store_->config().value("settings_animations").toBool()) return;
+    const double from = motion_.isRunning("page") ? pageOpacity_->opacity() : 0.15;
+    motion_.stop("page");
+    if (!isVisible() || !store_->config().value("settings_animations").toBool()) {
+        pageOpacity_->setOpacity(1.0);
+        return;
+    }
     const auto duration = std::chrono::milliseconds(store_->config().value("settings_animation_duration").toInt());
-    motion_.start("page", 0.15, 1.0, duration, [this](double opacity) {
+    motion_.start("page", from, 1.0, duration, [this](double opacity) {
         pageOpacity_->setOpacity(opacity);
     });
 }

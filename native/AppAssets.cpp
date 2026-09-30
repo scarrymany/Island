@@ -4,6 +4,7 @@
 #include <QGuiApplication>
 #include <QResource>
 #include <QDebug>
+#include <QDir>
 
 // Keep the resource initializer in the global namespace so static linking resolves it.
 static void initializeResources() {
@@ -19,8 +20,9 @@ QStringList AppAssets::bundledFontFamilies() {
     static const QStringList loaded = [] {
         initializeResources();
         QStringList families;
-        for (const auto* file : {"Inter", "Manrope", "GolosText", "Rubik", "IBMPlexSans", "JetBrainsMono"}) {
-            const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/island/fonts/%1.ttf").arg(QString::fromLatin1(file)));
+        const QDir fontDirectory(QStringLiteral(":/island/fonts"));
+        for (const auto& file : fontDirectory.entryList({QStringLiteral("*.ttf")}, QDir::Files)) {
+            const int id = QFontDatabase::addApplicationFont(fontDirectory.filePath(file));
             const auto registered = QFontDatabase::applicationFontFamilies(id);
             if (registered.isEmpty())
                 qWarning() << "Cannot load the bundled font:" << file;

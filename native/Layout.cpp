@@ -3,10 +3,12 @@
 #include <QJsonArray>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace Layout {
 QString formatTime(double seconds) {
-    const auto value = std::isfinite(seconds) ? std::max(0, static_cast<int>(seconds)) : 0;
+    const auto value = std::isfinite(seconds)
+        ? static_cast<int>(std::clamp(seconds, 0.0, static_cast<double>(std::numeric_limits<int>::max()))) : 0;
     const int hours = value / 3600;
     const int minutes = (value % 3600) / 60;
     const int remainder = value % 60;

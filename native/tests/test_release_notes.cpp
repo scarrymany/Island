@@ -58,13 +58,13 @@ private slots:
     }
 
     void readableBundledNotesCanBeDismissedAndReopened() {
-        QVERIFY(ReleaseNotesDialog::markdown().contains(QStringLiteral("Готовые пресеты")));
+        QVERIFY(ReleaseNotesDialog::markdown().contains(QStringLiteral("55 новых шрифтов")));
         ReleaseNotesDialog dialog;
         QVERIFY(dialog.windowTitle().contains(AppInfo::Version));
         auto* content = dialog.findChild<QTextBrowser*>("releaseNotesContent");
         auto* done = dialog.findChild<QPushButton*>("releaseNotesDone");
         QVERIFY(content && done);
-        QVERIFY(content->toPlainText().contains(QStringLiteral("Закрепить островок")));
+        QVERIFY(content->toPlainText().contains(QStringLiteral("61 встроенного семейства")));
         QSignalSpy finished(&dialog, &QDialog::finished);
         dialog.show();
         QCoreApplication::processEvents();
