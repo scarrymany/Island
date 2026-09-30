@@ -106,9 +106,7 @@ jobs:
           }
           Get-Content (Join-Path $captures 'capture-info.txt')
 
-      - name: Probe native desktop composition on the review branch
-        if: github.ref == 'refs/heads/release/usability-1.1.0'
-        continue-on-error: true
+      - name: Verify native desktop composition and hit testing
         run: |
           cmake -S . -B build/native "-DCMAKE_PREFIX_PATH=$env:RUNNER_TEMP/Qt/6.8.3/msvc2022_64" -DISLAND_DESKTOP_TESTS=ON
           if ($LASTEXITCODE -ne 0) { throw 'Desktop test configuration failed.' }
@@ -121,7 +119,7 @@ jobs:
           $process = Start-Process -FilePath 'build/native/Release/test_desktop.exe' -ArgumentList @('-o', ('"{0},txt"' -f $output)) -PassThru
           if (!$process.WaitForExit(90000)) { $process.Kill(); throw 'Desktop test timed out.' }
           Get-Content -LiteralPath $output
-          if ($process.ExitCode -ne 0) { throw "Desktop composition probe failed: $($process.ExitCode). Inspect before release." }
+          if ($process.ExitCode -ne 0) { throw "Desktop composition verification failed: $($process.ExitCode). Inspect before release." }
 
       - name: Upload actual application screenshots
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
