@@ -1,6 +1,7 @@
 #include "AppAssets.h"
 
 #include <QFile>
+#include <QDir>
 #include <QFontDatabase>
 #include <QRawFont>
 #include <QtTest>
@@ -66,6 +67,22 @@ private slots:
             qInfo() << "Bundled font:" << name << "; checked Cyrillic glyphs:" << letters.size();
         }
         QCOMPARE(AppAssets::bundledFontFamilies(), AppAssets::bundledFontFamilies());
+    }
+
+    void additionalFontsProvideCyrillicWithoutSystemInstallation() {
+        const auto files = QDir(QStringLiteral(":/island/fonts")).entryList({QStringLiteral("*.ttf")}, QDir::Files);
+        QVERIFY(files.size() > 56);
+        const auto families = AppAssets::bundledFontFamilies();
+        QVERIFY(families.size() > 56);
+        for (const auto& file : files) {
+            QFile resource(QStringLiteral(":/island/fonts/%1").arg(file));
+            QVERIFY(resource.open(QIODevice::ReadOnly));
+            const QRawFont font(resource.readAll(), 16, QFont::PreferNoHinting);
+            QVERIFY2(font.isValid(), qPrintable(file));
+            QVERIFY2(families.contains(font.familyName()), qPrintable(font.familyName()));
+            for (const QChar letter : QStringLiteral("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюяІіЇїЄєҐґ"))
+                QVERIFY2(font.supportsCharacter(letter), qPrintable(file));
+        }
     }
 
     void semiboldFontUsesInter() {

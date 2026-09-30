@@ -105,7 +105,7 @@ ReleaseNotesDialog::ReleaseNotesDialog(QWidget* parent) : QDialog(parent) {
     auto* eyebrow = new QLabel(QStringLiteral("SCARP ISLAND / %1").arg(AppInfo::Version), this);
     eyebrow->setObjectName("releaseEyebrow");
     layout->addWidget(eyebrow);
-    auto* title = new QLabel(QStringLiteral("Больше удобства. Меньше суеты."), this);
+    auto* title = new QLabel(QStringLiteral("Плавнее. Больше шрифтов."), this);
     title->setObjectName("releaseTitle");
     title->setWordWrap(true);
     layout->addWidget(title);
