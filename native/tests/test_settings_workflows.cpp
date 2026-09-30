@@ -8,11 +8,13 @@
 #include <QDesktopServices>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -78,7 +80,7 @@ QString runDialogs(const std::function<void()>& action, const QList<DialogStep>&
             dialog->reject();
             return;
         }
-        const auto step = steps[next++];
+        const auto step = steps[next];
         bool matched = false;
         if (step.kind == DialogStep::Input) {
             if (auto* input = qobject_cast<QInputDialog*>(dialog)) {
@@ -94,12 +96,17 @@ QString runDialogs(const std::function<void()>& action, const QList<DialogStep>&
             }
         } else if (auto* file = qobject_cast<QFileDialog*>(dialog)) {
             matched = true;
-            file->selectFile(step.text);
+            if (!step.text.isEmpty()) {
+                const QFileInfo target(step.text);
+                file->setDirectory(target.absolutePath());
+                file->selectFile(target.fileName());
+            }
         }
         if (!matched) {
             error = QStringLiteral("Wrong dialog at step %1: %2").arg(next).arg(dialog->metaObject()->className());
             dialog->reject();
         } else if (step.kind == DialogStep::Question) {
+            ++next;
             auto* message = qobject_cast<QMessageBox*>(dialog);
             auto* response = message->button(static_cast<QMessageBox::StandardButton>(step.result));
             if (response)
@@ -108,10 +115,14 @@ QString runDialogs(const std::function<void()>& action, const QList<DialogStep>&
                 error = QStringLiteral("Requested message button is unavailable");
                 message->reject();
             }
-        } else if (step.result == QDialog::Accepted) {
-            dialog->accept();
         } else {
-            dialog->done(step.result);
+            QPointer<QDialog> pending = dialog;
+            if (step.result == QDialog::Accepted)
+                dialog->accept();
+            else
+                dialog->done(step.result);
+            if (!pending || !pending->isVisible())
+                ++next;
         }
     });
     QObject::connect(&watchdog, &QTimer::timeout, &watchdog, [&] {
