@@ -202,7 +202,9 @@ void HudWindow::scheduleScreenPlacement() {
 }
 
 bool HudWindow::event(QEvent* event) {
-    if (event->type() == QEvent::WindowBlocked || event->type() == QEvent::WindowDeactivate) cancelSeek();
+    // Focus loss or a modal window ends an unfinished gesture, but cannot undo a
+    // command already sent to the player. Keep its confirmation until reply/timeout.
+    if (event->type() == QEvent::WindowBlocked || event->type() == QEvent::WindowDeactivate) cancelScrub();
     const bool handled = QWidget::event(event);
     if (event->type() == QEvent::Move || event->type() == QEvent::DevicePixelRatioChange) syncRefreshRate();
     if (event->type() == QEvent::DevicePixelRatioChange) updateNativeRegion();

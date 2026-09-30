@@ -186,6 +186,33 @@ private slots:
         media.position = predicted; hud.setSnapshot(media);
         QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), timeAt(reference, media, predicted));
     }
+    void submittedSeekKeepsItsConfirmationPreviewAfterFocusLoss_data() {
+        QTest::addColumn<bool>("blocked");
+        QTest::newRow("deactivated") << false;
+        QTest::newRow("blocked") << true;
+    }
+    void submittedSeekKeepsItsConfirmationPreviewAfterFocusLoss() {
+        QFETCH(bool, blocked);
+        auto c = config(); c["idle_collapse"] = false;
+        HudWindow hud(c), reference(c);
+        MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
+        media.title = "Track"; media.sourceId = "Player"; media.position = 10;
+        hud.setSnapshot(media); hud.reveal();
+        QSignalSpy commands(&hud, &HudWindow::command);
+        QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
+        QCOMPARE(commands.size(), 1);
+        const double target = commands.first().at(1).toDouble();
+        const auto expected = timeAt(reference, media, target);
+        QEvent focusChanged(blocked ? QEvent::WindowBlocked : QEvent::WindowDeactivate);
+        QApplication::sendEvent(&hud, &focusChanged);
+        media.position = 15; hud.setSnapshot(media);
+        QTest::qWait(150);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), expected);
+        media.position = target; hud.setSnapshot(media);
+        media.position = target + 10; hud.setSnapshot(media);
+        QCOMPARE(hud.grab(pixelRect(hud, "time")).toImage(), timeAt(reference, media, media.position));
+        QCOMPARE(commands.size(), 1);
+    }
     void pendingSeekIsCancelledWhenTrackOrSourceChanges_data() {
         QTest::addColumn<bool>("sourceChange");
         QTest::newRow("track") << false;
@@ -282,7 +309,7 @@ private slots:
     }
     void interruptedScrubCannotResumeOnAnotherTrack_data() {
         QTest::addColumn<QString>("interruption");
-        for (const auto* reason : {"track", "source", "inactive", "disabled", "duration", "hide", "fade", "editing", "layout", "capture", "blocked"})
+        for (const auto* reason : {"track", "source", "inactive", "disabled", "duration", "hide", "fade", "editing", "layout", "capture", "blocked", "deactivated"})
             QTest::newRow(reason) << QString::fromLatin1(reason);
     }
     void interruptedScrubCannotResumeOnAnotherTrack() {
@@ -311,6 +338,8 @@ private slots:
         } else if (interruption == "blocked") {
             QEvent blocked(QEvent::WindowBlocked); QApplication::sendEvent(&hud, &blocked);
             QEvent unblocked(QEvent::WindowUnblocked); QApplication::sendEvent(&hud, &unblocked);
+        } else if (interruption == "deactivated") {
+            QEvent deactivated(QEvent::WindowDeactivate); QApplication::sendEvent(&hud, &deactivated);
         } else {
             auto changed = media;
             if (interruption == "track") changed.title = "Second";

@@ -80,20 +80,33 @@ if (Test-Path -LiteralPath $screenshotDirectory -PathType Container) {
 }
 $notes = Join-Path $workspace "docs/releases/$Tag.md"
 $notesArguments = if (Test-Path -LiteralPath $notes -PathType Leaf) { @('--notes-file', $notes) } else { @('--generate-notes') }
-& gh release create $Tag @assets --repo $repository --verify-tag @notesArguments --title "SCARP ISLAND $Tag" --draft
-if ($LASTEXITCODE -ne 0) { throw 'Could not create the release draft. Existing releases are never overwritten.' }
-
-$releaseId = & gh release view $Tag --repo $repository --json databaseId --jq '.databaseId'
-if ($LASTEXITCODE -ne 0 -or $releaseId -notmatch '^\d+$') { throw 'Could not resolve the draft release ID. The release remains a draft.' }
+$releaseId = & gh release view $Tag --repo $repository --json databaseId --jq '.databaseId' 2>$null
+$hasExistingRelease = $LASTEXITCODE -eq 0
+if (!$hasExistingRelease) {
+    & gh release create $Tag @assets --repo $repository --verify-tag @notesArguments --title "SCARP ISLAND $Tag" --draft
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the release draft. Existing releases are never overwritten.' }
+    $releaseId = & gh release view $Tag --repo $repository --json databaseId --jq '.databaseId'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the draft release ID. The release remains a draft.' }
+}
+if ($releaseId -notmatch '^\d+$') { throw 'Could not resolve the release ID.' }
 $releaseJson = & gh api "repos/$repository/releases/$releaseId"
-if ($LASTEXITCODE -ne 0) { throw 'Could not verify uploaded assets. The release remains a draft.' }
+if ($LASTEXITCODE -ne 0) { throw 'Could not verify uploaded assets. The release remains unchanged.' }
 $release = $releaseJson | ConvertFrom-Json
-foreach ($name in $assetNames) {
+if ($release.tag_name -cne $Tag -or $release.prerelease) { throw 'The existing release metadata does not match the stable tag.' }
+# A retry may reuse only an identical draft/public release. Never upload over,
+# delete, or silently replace an existing asset, even after interrupted delivery.
+foreach ($path in $assets) {
+    $name = Split-Path -Leaf $path
     $asset = @($release.assets | Where-Object { $_.name -ceq $name })
-    $localSize = (Get-Item -LiteralPath (Join-Path $dist $name)).Length
-    if ($asset.Count -ne 1 -or $asset[0].digest -cne "sha256:$($expectedHashes[$name])" -or $asset[0].size -ne $localSize) {
-        throw "GitHub digest or size verification failed for $name. The release remains a draft."
+    $localSize = (Get-Item -LiteralPath $path).Length
+    $localHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($asset.Count -ne 1 -or $asset[0].digest -cne "sha256:$localHash" -or $asset[0].size -ne $localSize) {
+        throw "GitHub digest or size verification failed for $name. The release remains unchanged."
     }
+}
+if (!$release.draft) {
+    Write-Output "Already published and verified https://github.com/$repository/releases/tag/$Tag"
+    return
 }
 & gh release edit $Tag --repo $repository --draft=false --latest --verify-tag
 if ($LASTEXITCODE -ne 0) { throw 'Package verification passed, but publishing the draft failed.' }

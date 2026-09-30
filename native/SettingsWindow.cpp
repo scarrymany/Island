@@ -754,8 +754,9 @@ void SettingsWindow::buildLayout()
     auto* display = addGroup(page, QStringLiteral("Монитор и положение"));
     addToggle(display, QStringLiteral("Закрепить островок"), "position_locked");
     display->addRow(description(QStringLiteral("Закрепление отключает перетаскивание всего островка мышью. Управление музыкой и редактирование отдельных элементов остаются доступны.")));
-    auto* resetPosition = new QPushButton(QStringLiteral("Вернуть островок на начальное место"));
+    auto* resetPosition = new QPushButton(QStringLiteral("Вернуть на начальное место"));
     resetPosition->setObjectName("resetPosition");
+    resetPosition->setAccessibleName(QStringLiteral("Вернуть островок на начальное место"));
     resetPosition->setToolTip(QStringLiteral("Сверху по центру выбранного монитора, с исходным отступом. Работает и при закреплении."));
     connect(resetPosition, &QPushButton::clicked, this, &SettingsWindow::resetPositionRequested);
     display->addRow(resetPosition);
