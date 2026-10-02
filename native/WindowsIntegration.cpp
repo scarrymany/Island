@@ -770,7 +770,7 @@ bool WindowsIntegration::foregroundIsFullscreen(WId reference) {
     if (!GetMonitorInfoW(monitor, &info) || !GetWindowRect(window, &bounds)) return false;
     const bool covers = bounds.left <= info.rcMonitor.left && bounds.top <= info.rcMonitor.top
         && bounds.right >= info.rcMonitor.right && bounds.bottom >= info.rcMonitor.bottom;
-    // A maximized captioned window also spans the monitor when the taskbar auto-hides.
-    const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
-    return covers && !(IsZoomed(window) && (style & WS_CAPTION) == WS_CAPTION);
+    // Maximized windows also span the monitor when the taskbar auto-hides, whatever
+    // their frame style; fullscreen games, players and browsers are never "zoomed".
+    return covers && !IsZoomed(window);
 }

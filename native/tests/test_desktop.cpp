@@ -59,7 +59,7 @@ QRect cardWindow(const HudWindow& hud, int inset) {
     return hud.cardGeometry().toAlignedRect().adjusted(-inset, -inset, inset, inset);
 }
 
-bool docked(const HudWindow& hud) { return hud.isCollapsed() && hud.dockProgress() >= 1; }
+bool docked(const HudWindow& hud) { return hud.isCollapsed() && hud.dockProgress() == 1.0; }
 
 QString cursorUnavailable(const QPoint& requested) {
     POINT actual{};
@@ -268,24 +268,30 @@ private slots:
             QVERIFY(compactPixels.changedBounds.width() <= qCeil(CompactWidth * ratio) + 2);
 
             const QPoint hoverTarget(compactGeometry.center().x(), screenRect.top() + VisibleHeight / 2);
-            const QPoint local = hud.mapFromGlobal(hoverTarget);
-            POINT nativeTarget{qRound(local.x() * hud.devicePixelRatioF()),
-                               qRound(local.y() * hud.devicePixelRatioF())};
-            QVERIFY(ClientToScreen(reinterpret_cast<HWND>(hud.winId()), &nativeTarget));
-            QVERIFY2(WindowFromPoint(nativeTarget) == reinterpret_cast<HWND>(hud.winId()),
-                "The native compact handle does not receive hit tests at its visible center");
-            // Composition coverage is independent of access to the interactive input desktop.
-            QEnterEvent enter(local, local, hoverTarget);
-            QCoreApplication::sendEvent(&hud, &enter);
-            QTRY_COMPARE_WITH_TIMEOUT(cardWindow(hud, inset), expandedGeometry, 1500);
-            QTest::qWait(80);
-            QVERIFY2(GetForegroundWindow() == originalFocus, "Enter-event expansion stole keyboard focus");
-            const QImage hovered = captureDesktop(screen, captureArea, captures.filePath(prefix + "event-expanded.png"));
-            QVERIFY(!hovered.isNull());
-            QCOMPARE(hovered.size(), baseline.size());
-            const auto hoveredPixels = comparePixels(baseline, hovered, expandedShape);
-            QVERIFY2(hoveredPixels.changedOutside == 0, qPrintable(prefix + hoveredPixels.description()));
-            QVERIFY(hoveredPixels.changedInside > 1000);
+            // Over a fullscreen foreground app the strip deliberately passes the pointer through.
+            const bool fullscreenForeground = WindowsIntegration::foregroundIsFullscreen(hud.winId());
+            if (fullscreenForeground)
+                qInfo() << "A fullscreen application is in the foreground; hit-test and hover checks are skipped";
+            if (!fullscreenForeground) {
+                const QPoint local = hud.mapFromGlobal(hoverTarget);
+                POINT nativeTarget{qRound(local.x() * hud.devicePixelRatioF()),
+                                   qRound(local.y() * hud.devicePixelRatioF())};
+                QVERIFY(ClientToScreen(reinterpret_cast<HWND>(hud.winId()), &nativeTarget));
+                QVERIFY2(WindowFromPoint(nativeTarget) == reinterpret_cast<HWND>(hud.winId()),
+                    "The native compact handle does not receive hit tests at its visible center");
+                // Composition coverage is independent of access to the interactive input desktop.
+                QEnterEvent enter(local, local, hoverTarget);
+                QCoreApplication::sendEvent(&hud, &enter);
+                QTRY_COMPARE_WITH_TIMEOUT(cardWindow(hud, inset), expandedGeometry, 1500);
+                QTest::qWait(80);
+                QVERIFY2(GetForegroundWindow() == originalFocus, "Enter-event expansion stole keyboard focus");
+                const QImage hovered = captureDesktop(screen, captureArea, captures.filePath(prefix + "event-expanded.png"));
+                QVERIFY(!hovered.isNull());
+                QCOMPARE(hovered.size(), baseline.size());
+                const auto hoveredPixels = comparePixels(baseline, hovered, expandedShape);
+                QVERIFY2(hoveredPixels.changedOutside == 0, qPrintable(prefix + hoveredPixels.description()));
+                QVERIFY(hoveredPixels.changedInside > 1000);
+            }
 
             hud.conceal(true);
             QTRY_VERIFY_WITH_TIMEOUT(!hud.isVisible(), 1500);
@@ -394,6 +400,8 @@ private slots:
         QCOMPARE(cardWindow(hud, inset).size(), QSize(CompactWidth + inset * 2, CompactHeight + inset * 2));
         QTest::qWait(80);
         const HWND originalFocus = GetForegroundWindow();
+        if (WindowsIntegration::foregroundIsFullscreen(hud.winId()))
+            QSKIP("A fullscreen application is in the foreground; the strip intentionally ignores hover there");
         const QPoint target(cardWindow(hud, inset).center().x(), screen->geometry().top() + VisibleHeight / 2);
         QCursor::setPos(target);
         if (QCursor::pos() != target) QSKIP(qPrintable(cursorUnavailable(target)));

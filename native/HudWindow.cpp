@@ -440,7 +440,8 @@ void HudWindow::applyConfig(const QJsonObject& config) {
 }
 
 QRectF HudWindow::cardAt(double progress) const {
-    const double t = std::clamp(progress, -DockOvershoot, 1.0 + DockOvershoot);
+    // Opening may overshoot slightly; docking never pushes the strip past its resting edge.
+    const double t = std::clamp(progress, -DockOvershoot, 1.0);
     const QRectF& from = expandedCard_;
     const QRectF& to = compactCard_;
     QRectF card(lerp(from.left(), to.left(), t), lerp(from.top(), to.top(), t),

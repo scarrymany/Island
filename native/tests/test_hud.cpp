@@ -42,7 +42,7 @@ private:
     static QPoint header(HudWindow& hud) {
         return (hud.cardOrigin() + QPointF(hud.cardGeometry().width() / 2, 1)).toPoint();
     }
-    static bool docked(HudWindow& hud) { return hud.isCollapsed() && hud.dockProgress() >= 1; }
+    static bool docked(HudWindow& hud) { return hud.isCollapsed() && hud.dockProgress() == 1.0; }
     static QByteArray artwork(const QColor& left, const QColor& right = {}) {
         QImage image(100, 100, QImage::Format_RGB32);
         image.fill(left);
