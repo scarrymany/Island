@@ -151,6 +151,7 @@ private:
     std::optional<QPointF> dragOrigin_;
     std::optional<QPoint> dragWindow_;
     std::optional<QPoint> pendingDrag_;
+    std::optional<QRect> pendingFrame_;
     std::optional<double> seekPreview_;
     std::optional<MediaSnapshot> pendingSeek_;
     QPixmap cover_, oldCover_;

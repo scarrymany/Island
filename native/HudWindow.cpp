@@ -475,7 +475,26 @@ void HudWindow::updateCard() {
         ? QRect(QPoint(qRound(expandedCard_.center().x() - frameSize_.width() / 2.0),
                        qRound(expandedCard_.top()) - qCeil(SurfaceInset * config_["scale"].toDouble(1))), frameSize_)
         : frameFor(card_);
-    if (geometry() != frame) setGeometry(frame);
+    if (geometry() == frame) { pendingFrame_.reset(); stopAnimation("frame"); return; }
+    // Per-frame moves already run inside a display tick. Any other change of the frame
+    // (drag release, settings, screens) would show the old picture at the new position
+    // for one composition; apply it right after a vertical blank and repaint at once.
+    if (!isVisible() || animations_.isRunning("dock")) {
+        pendingFrame_.reset();
+        stopAnimation("frame");
+        setGeometry(frame);
+        return;
+    }
+    pendingFrame_ = frame;
+    animations_.requestFrame(QStringLiteral("frame"), [this] {
+        if (!pendingFrame_) return;
+        const QRect target = *pendingFrame_;
+        pendingFrame_.reset();
+        if (geometry() == target) return;
+        setGeometry(target);
+        updateNativeRegion();
+        repaint();
+    });
 }
 
 double HudWindow::cardRadius() const {
@@ -1480,10 +1499,8 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
             {"previous", QStringLiteral("Предыдущий трек")}, {"progress", QStringLiteral("Перемотка")},
             {"volume", volumeAvailable_ ? QStringLiteral("Громкость текущего приложения. Для сайтов - всего браузера.")
                                         : QStringLiteral("У этого источника пока нет доступной звуковой сессии.")}};
-        const QString hint = config_["position_locked"].toBool(false)
-            ? QStringLiteral("Островок закреплён. Правая кнопка - меню.")
-            : QStringLiteral("Перетащите островок. Правая кнопка - меню.");
-        setToolTip(tips.value(hit, hint));
+        // Only controls explain themselves; the card itself stays quiet under the pointer.
+        setToolTip(tips.value(hit));
         setCursor(editing_ ? Qt::SizeAllCursor : Transport.contains(hit) || hit == "progress" || (hit == "volume" && volumeAvailable_) ? Qt::PointingHandCursor : Qt::ArrowCursor);
     }
     if (!dragElement_.isEmpty() && editing_ && dragOrigin_) {

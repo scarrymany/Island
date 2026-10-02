@@ -190,19 +190,16 @@ void IslandMenu::trackHighlight() {
                       [this](double value) { highlightAlpha_ = value; update(); });
         return;
     }
-    if (!motion || highlightAlpha_ <= 0.01 || !highlight_.isValid()) {
-        motion_.stop(QStringLiteral("slide"));
-        highlight_ = next;
-        if (!motion) { highlightAlpha_ = 1; return; }
-    } else {
-        origin_ = highlight_;
-        motion_.start(QStringLiteral("slide"), 0, 1, std::chrono::milliseconds(150), [this](double value) {
-            highlight_ = QRectF(origin_.topLeft() + (target_.topLeft() - origin_.topLeft()) * value,
-                                origin_.size() + (target_.size() - origin_.size()) * value);
-            update();
-        });
+    // The highlight follows the pointer exactly; sliding it lagged behind fast movement
+    // and briefly lit items the pointer had already left.
+    const bool appearing = highlightAlpha_ <= 0.01 || !highlight_.isValid();
+    highlight_ = next;
+    if (!motion || !appearing) {
+        motion_.stop(QStringLiteral("alpha"));
+        highlightAlpha_ = 1;
+        return;
     }
-    motion_.start(QStringLiteral("alpha"), highlightAlpha_, 1, std::chrono::milliseconds(110),
+    motion_.start(QStringLiteral("alpha"), highlightAlpha_, 1, std::chrono::milliseconds(90),
                   [this](double value) { highlightAlpha_ = value; update(); });
 }
 
@@ -251,13 +248,10 @@ void IslandMenu::showEvent(QShowEvent* event) {
         move(final);
     }
     if (!currentTheme().motion) { setWindowOpacity(1); return; }
-    // Fade in with a short drift away from the pointer, like a native flyout.
-    const int drift = upward ? 6 : -6;
+    // Fade in place: moving the menu under a resting pointer would retarget the hover.
     setWindowOpacity(0);
-    motion_.start(QStringLiteral("open"), 0, 1, std::chrono::milliseconds(170), QEasingCurve::OutCubic, [this, final, drift](double value) {
-        setWindowOpacity(value);
-        move(final + QPoint(0, qRound(drift * (1 - value))));
-    });
+    motion_.start(QStringLiteral("open"), 0, 1, std::chrono::milliseconds(140), QEasingCurve::OutCubic,
+                  [this](double value) { setWindowOpacity(value); });
 }
 
 void IslandMenu::hideEvent(QHideEvent* event) {

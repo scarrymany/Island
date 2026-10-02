@@ -41,7 +41,6 @@ private:
 
     AnimationClock motion_;
     QRectF highlight_;
-    QRectF origin_;
     QRectF target_;
     double highlightAlpha_ = 0;
 };
