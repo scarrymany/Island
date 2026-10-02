@@ -54,6 +54,13 @@ QJsonObject desktopConfiguration(QScreen* screen, bool blur = true) {
     return config;
 }
 
+// The overlay window is a stable transparent frame; compare the card with its margin.
+QRect cardWindow(const HudWindow& hud, int inset) {
+    return hud.cardGeometry().toAlignedRect().adjusted(-inset, -inset, inset, inset);
+}
+
+bool docked(const HudWindow& hud) { return hud.isCollapsed() && hud.dockProgress() >= 1; }
+
 QString cursorUnavailable(const QPoint& requested) {
     POINT actual{};
     const BOOL readable = GetCursorPos(&actual);
@@ -219,11 +226,11 @@ private slots:
             track.canNext = track.canPrevious = track.canPlayPause = false;
             hud.setSnapshot(track);
             hud.reveal(true);
-            const QRect expandedGeometry = hud.geometry();
-            const int inset = (expandedGeometry.width() - config["width"].toInt()) / 2;
+            const int inset = 14;
+            const QRect expandedGeometry = cardWindow(hud, inset);
             QVERIFY(captureArea.contains(expandedGeometry));
             QTest::qWait(700);
-            QCOMPARE(hud.geometry(), expandedGeometry);
+            QCOMPARE(cardWindow(hud, inset), expandedGeometry);
             const QImage expanded = captureDesktop(screen, captureArea, captures.filePath(prefix + "expanded.png"));
             QVERIFY(!expanded.isNull());
             QCOMPARE(expanded.size(), baseline.size());
@@ -244,13 +251,15 @@ private slots:
             }
 
             const QSize compactSize(CompactWidth + inset * 2, CompactHeight + inset * 2);
-            QTRY_COMPARE_WITH_TIMEOUT(hud.size(), compactSize, 2500);
+            QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 2500);
             QTest::qWait(80);
-            QCOMPARE(hud.geometry().bottom() + 1 - inset, screenRect.top() + VisibleHeight);
+            const QRect compactGeometry = cardWindow(hud, inset);
+            QCOMPARE(compactGeometry.size(), compactSize);
+            QCOMPARE(compactGeometry.bottom() + 1 - inset, screenRect.top() + VisibleHeight);
             const QImage compact = captureDesktop(screen, captureArea, captures.filePath(prefix + "collapsed.png"));
             QVERIFY(!compact.isNull());
             QCOMPARE(compact.size(), baseline.size());
-            const auto compactShape = cardPath(hud.geometry(), inset, config["compact_radius"].toDouble(), captureArea, ratio);
+            const auto compactShape = cardPath(compactGeometry, inset, config["compact_radius"].toDouble(), captureArea, ratio);
             const auto compactPixels = comparePixels(baseline, compact, compactShape);
             QVERIFY2(compactPixels.changedOutside == 0, qPrintable(prefix + compactPixels.description()));
             QVERIFY2(compactPixels.changedInside > 50, "The compact edge handle is not visible");
@@ -258,7 +267,7 @@ private slots:
             QVERIFY(compactPixels.changedBounds.height() >= qFloor(VisibleHeight * ratio) - 1);
             QVERIFY(compactPixels.changedBounds.width() <= qCeil(CompactWidth * ratio) + 2);
 
-            const QPoint hoverTarget(hud.geometry().center().x(), screenRect.top() + VisibleHeight / 2);
+            const QPoint hoverTarget(compactGeometry.center().x(), screenRect.top() + VisibleHeight / 2);
             const QPoint local = hud.mapFromGlobal(hoverTarget);
             POINT nativeTarget{qRound(local.x() * hud.devicePixelRatioF()),
                                qRound(local.y() * hud.devicePixelRatioF())};
@@ -268,7 +277,7 @@ private slots:
             // Composition coverage is independent of access to the interactive input desktop.
             QEnterEvent enter(local, local, hoverTarget);
             QCoreApplication::sendEvent(&hud, &enter);
-            QTRY_COMPARE_WITH_TIMEOUT(hud.geometry(), expandedGeometry, 1500);
+            QTRY_COMPARE_WITH_TIMEOUT(cardWindow(hud, inset), expandedGeometry, 1500);
             QTest::qWait(80);
             QVERIFY2(GetForegroundWindow() == originalFocus, "Enter-event expansion stole keyboard focus");
             const QImage hovered = captureDesktop(screen, captureArea, captures.filePath(prefix + "event-expanded.png"));
@@ -351,12 +360,15 @@ private slots:
                 QVERIFY2(PtInRegion(region, x + origin.x - frame.left, y + origin.y - frame.top),
                     "A binary native window region clipped a painted antialiased edge pixel");
                 const QColor composed = actual.pixelColor(x, y);
-                const int expectedChannel = expected.alpha(); // White foreground over a black desktop.
-                QVERIFY2(std::abs(composed.red() - expectedChannel) <= 4
-                    && std::abs(composed.green() - expectedChannel) <= 4
-                    && std::abs(composed.blue() - expectedChannel) <= 4,
-                    qPrintable(QStringLiteral("Edge (%1,%2): alpha %3, desktop RGB (%4,%5,%6)")
-                        .arg(x).arg(y).arg(expectedChannel).arg(composed.red()).arg(composed.green()).arg(composed.blue())));
+                // Over a black desktop the compositor must show exactly the premultiplied edge colour.
+                const int red = qRound(expected.red() * expected.alphaF());
+                const int green = qRound(expected.green() * expected.alphaF());
+                const int blue = qRound(expected.blue() * expected.alphaF());
+                QVERIFY2(std::abs(composed.red() - red) <= 4 && std::abs(composed.green() - green) <= 4
+                    && std::abs(composed.blue() - blue) <= 4,
+                    qPrintable(QStringLiteral("Edge (%1,%2): alpha %3, expected RGB (%4,%5,%6), desktop RGB (%7,%8,%9)")
+                        .arg(x).arg(y).arg(expected.alpha()).arg(red).arg(green).arg(blue)
+                        .arg(composed.red()).arg(composed.green()).arg(composed.blue())));
             }
         }
         QVERIFY2(partial > 40, "No smoothly antialiased corner pixels were rendered");
@@ -376,15 +388,16 @@ private slots:
 
         HudWindow hud(desktopConfiguration(screen));
         hud.reveal(true);
-        const QRect expandedGeometry = hud.geometry();
-        const int inset = (expandedGeometry.width() - 560) / 2;
-        QTRY_COMPARE_WITH_TIMEOUT(hud.size(), QSize(CompactWidth + inset * 2, CompactHeight + inset * 2), 2500);
+        const int inset = 14;
+        const QRect expandedGeometry = cardWindow(hud, inset);
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 2500);
+        QCOMPARE(cardWindow(hud, inset).size(), QSize(CompactWidth + inset * 2, CompactHeight + inset * 2));
         QTest::qWait(80);
         const HWND originalFocus = GetForegroundWindow();
-        const QPoint target(hud.geometry().center().x(), screen->geometry().top() + VisibleHeight / 2);
+        const QPoint target(cardWindow(hud, inset).center().x(), screen->geometry().top() + VisibleHeight / 2);
         QCursor::setPos(target);
         if (QCursor::pos() != target) QSKIP(qPrintable(cursorUnavailable(target)));
-        QTRY_COMPARE_WITH_TIMEOUT(hud.geometry(), expandedGeometry, 1500);
+        QTRY_COMPARE_WITH_TIMEOUT(cardWindow(hud, inset), expandedGeometry, 1500);
         QVERIFY2(GetForegroundWindow() == originalFocus, "Native hover expansion stole keyboard focus");
     }
 };

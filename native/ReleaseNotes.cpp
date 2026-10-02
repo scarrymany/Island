@@ -1,6 +1,7 @@
 #include "ReleaseNotes.h"
 #include "AppAssets.h"
 #include "AppInfo.h"
+#include "SmoothScroll.h"
 
 #include <QDir>
 #include <QFile>
@@ -105,7 +106,7 @@ ReleaseNotesDialog::ReleaseNotesDialog(QWidget* parent) : QDialog(parent) {
     auto* eyebrow = new QLabel(QStringLiteral("SCARP ISLAND / %1").arg(AppInfo::Version), this);
     eyebrow->setObjectName("releaseEyebrow");
     layout->addWidget(eyebrow);
-    auto* title = new QLabel(QStringLiteral("Больше удобства. Меньше суеты."), this);
+    auto* title = new QLabel(QStringLiteral("Плавнее. Тише. Премиальнее."), this);
     title->setObjectName("releaseTitle");
     title->setWordWrap(true);
     layout->addWidget(title);
@@ -123,6 +124,8 @@ ReleaseNotesDialog::ReleaseNotesDialog(QWidget* parent) : QDialog(parent) {
         "h2 { color: #F3F3F6; font-size: 16px; margin-top: 20px; margin-bottom: 8px; }"
         "p, li { line-height: 135%; } a { color: #B5A9FF; }"));
     content->setMarkdown(markdown());
+    SmoothScroll::install(content);
+    SmoothScroll::setColor(content, QColor("#E2E2E8"));
     layout->addWidget(content, 1);
     auto* footer = new QHBoxLayout;
     auto* hint = new QLabel(QStringLiteral("Можно открыть снова: Настройки → Обновления"), this);

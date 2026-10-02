@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Island VERSION 1.1.0 LANGUAGES CXX)
+project(Island VERSION 1.2.0 LANGUAGES CXX)
 
 if(NOT WIN32)
     message(FATAL_ERROR "Island requires Windows 10 1809 or newer")
@@ -22,6 +22,12 @@ add_library(island_core STATIC
     native/UpdateService.cpp native/UpdateService.h
     native/ReleaseNotes.cpp native/ReleaseNotes.h resources/release_notes.qrc
     native/Layout.cpp native/Layout.h
+    native/Squircle.cpp native/Squircle.h
+    native/HudIcons.cpp native/HudIcons.h
+    native/IslandMenu.cpp native/IslandMenu.h
+    native/IslandToolTip.cpp native/IslandToolTip.h
+    native/IslandDialogs.cpp native/IslandDialogs.h
+    native/SmoothScroll.cpp native/SmoothScroll.h
     native/HudWindow.cpp native/HudWindow.h
     native/SettingsControls.cpp native/SettingsControls.h
     native/SettingsWindow.cpp native/SettingsWindow.h

@@ -13,7 +13,7 @@ class QCloseEvent;
 class QComboBox;
 class QDoubleSpinBox;
 class QFormLayout;
-class QGraphicsOpacityEffect;
+class PageTransition;
 class QLabel;
 class QListWidget;
 class QPushButton;
@@ -42,6 +42,8 @@ signals:
     void updateInstallRequested();
     void resetPositionRequested();
     void releaseNotesRequested();
+    // A visible island setting was edited here; the overlay should present itself.
+    void appearanceEdited();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -69,6 +71,7 @@ private:
     bool put(const QString& key, const QJsonValue& value);
     void updateStyle();
     void updateMotion();
+    bool beginPageAnimation();
     void animatePage();
     void finishPageAnimation();
     void refreshHideDelay();
@@ -92,7 +95,8 @@ private:
     AnimationClock motion_;
     QMetaObject::Connection refreshRateConnection_;
     QMetaObject::Connection screenConnection_;
-    QGraphicsOpacityEffect* pageOpacity_ = nullptr;
+    QWidget* content_ = nullptr;
+    PageTransition* transition_ = nullptr;
     QHash<QString, QWidget*> controls_;
     QList<QPair<QString, QString>> sources_;
     QListWidget* navigation_ = nullptr;

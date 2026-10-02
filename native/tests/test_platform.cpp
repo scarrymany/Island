@@ -61,13 +61,13 @@ private:
 
 QJsonObject releaseWithInstaller() {
     return {
-        {QStringLiteral("tag_name"), QStringLiteral("v1.2.0")},
+        {QStringLiteral("tag_name"), QStringLiteral("v9.0.0")},
         {QStringLiteral("body"), QStringLiteral("Playback fixes")},
         {QStringLiteral("draft"), false},
         {QStringLiteral("prerelease"), false},
         {QStringLiteral("assets"), QJsonArray{QJsonObject{
             {QStringLiteral("name"), QStringLiteral("Island-Setup.exe")},
-            {QStringLiteral("browser_download_url"), QStringLiteral("https://github.com/scarrymany/Island/releases/download/v1.2.0/Island-Setup.exe")},
+            {QStringLiteral("browser_download_url"), QStringLiteral("https://github.com/scarrymany/Island/releases/download/v9.0.0/Island-Setup.exe")},
             {QStringLiteral("digest"), QStringLiteral("sha256:") + QString(64, QLatin1Char('a'))},
             {QStringLiteral("size"), 4096},
             {QStringLiteral("state"), QStringLiteral("uploaded")}
@@ -153,7 +153,7 @@ private slots:
     void downloadUrlPolicy_data() {
         QTest::addColumn<QString>("url");
         QTest::addColumn<bool>("allowed");
-        QTest::newRow("github") << QStringLiteral("https://github.com/scarrymany/Island/releases/download/v1.2.0/Island-Setup.exe") << true;
+        QTest::newRow("github") << QStringLiteral("https://github.com/scarrymany/Island/releases/download/v9.0.0/Island-Setup.exe") << true;
         QTest::newRow("cdn") << QStringLiteral("https://release-assets.githubusercontent.com/path?signature=123") << true;
         QTest::newRow("plain-http") << QStringLiteral("http://github.com/file.exe") << false;
         QTest::newRow("host-suffix") << QStringLiteral("https://github.com.evil.test/file.exe") << false;
@@ -195,7 +195,7 @@ private slots:
         UpdateService service;
         auto release = releaseWithInstaller();
         auto installer = release.value(QStringLiteral("assets")).toArray().first().toObject();
-        installer.insert(QStringLiteral("browser_download_url"), QStringLiteral("https://github.com/other/Island/releases/download/v1.2.0/Island-Setup.exe"));
+        installer.insert(QStringLiteral("browser_download_url"), QStringLiteral("https://github.com/other/Island/releases/download/v9.0.0/Island-Setup.exe"));
         release.insert(QStringLiteral("assets"), QJsonArray{installer});
         QSignalSpy available(&service, &UpdateService::updateAvailable);
         service.parseRelease(QJsonDocument(release).toJson());
@@ -251,8 +251,8 @@ private slots:
 
     void releaseRejectsMismatchedAssetPath_data() {
         QTest::addColumn<QString>("path");
-        QTest::newRow("tag-case") << QStringLiteral("/scarrymany/Island/releases/download/V1.2.0/Island-Setup.exe");
-        QTest::newRow("asset-case") << QStringLiteral("/scarrymany/Island/releases/download/v1.2.0/island-setup.exe");
+        QTest::newRow("tag-case") << QStringLiteral("/scarrymany/Island/releases/download/V9.0.0/Island-Setup.exe");
+        QTest::newRow("asset-case") << QStringLiteral("/scarrymany/Island/releases/download/v9.0.0/island-setup.exe");
         QTest::newRow("different-tag") << QStringLiteral("/scarrymany/Island/releases/download/v1.3.0/Island-Setup.exe");
     }
 

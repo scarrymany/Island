@@ -26,7 +26,7 @@ constexpr double MaxCoordinate = 32768.0;
 const QStringList Elements = {
     "cover", "title", "artist", "album", "source", "progress", "time", "previous", "play", "next", "volume"
 };
-const QStringList Animations = {"appear", "disappear", "cover", "title", "progress", "hover", "play", "dock"};
+const QStringList Animations = {"appear", "disappear", "cover", "title", "progress", "hover", "play", "dock", "equalizer", "marquee"};
 const QSet<QString> ColorFields = {
     "background", "gradient_color", "text_color", "secondary_color", "accent_color",
     "progress_color", "icon_color", "settings_background", "settings_accent", "settings_text",
@@ -37,7 +37,7 @@ const QSet<QString> ThemeFields = ColorFields | QSet<QString>{
     "icon_size", "progress_height", "settings_font_size", "settings_opacity", "settings_blur",
     "settings_animations", "settings_animation_duration", "settings_font_family",
     "border_width", "border_opacity", "compact_radius", "compact_opacity",
-    "artwork_background", "artwork_background_strength"
+    "artwork_background", "artwork_background_strength", "artwork_accent", "surface_highlight"
 };
 // Presets are curated HUD appearances, never snapshots of a user's setup.
 // Keep this explicit allowlist separate from themes/profiles for import compatibility.
@@ -47,7 +47,7 @@ const QSet<QString> PresetFields = {
     "text_color", "secondary_color", "accent_color", "progress_color", "progress_height",
     "icon_color", "icon_size", "font_family", "font_size", "font_weight", "spacing", "layout", "visible",
     "compact_width", "compact_height", "compact_visible_height", "compact_radius", "compact_opacity", "compact_background",
-    "border_width", "border_opacity", "border_color"
+    "border_width", "border_opacity", "border_color", "artwork_accent", "surface_highlight"
 };
 const QMap<QString, QPair<double, double>> NumericRanges = {
     {"width", {260, 2000}}, {"height", {64, 600}}, {"scale", {0.5, 2.5}},
@@ -58,7 +58,8 @@ const QMap<QString, QPair<double, double>> NumericRanges = {
     {"settings_animation_duration", {80, 600}},
     {"idle_collapse_seconds", {1, 120}}, {"compact_width", {48, 500}}, {"compact_height", {8, 96}},
     {"compact_visible_height", {2, 96}}, {"compact_radius", {0, 48}}, {"compact_opacity", {0.1, 1}},
-    {"border_width", {0, 4}}, {"border_opacity", {0, 1}}, {"artwork_background_strength", {0, 1}}
+    {"border_width", {0, 4}}, {"border_opacity", {0, 1}}, {"artwork_background_strength", {0, 1}},
+    {"dock_hover_delay", {0, 1500}}
 };
 const QSet<QString> DecimalFields = {
     "scale", "opacity", "settings_opacity", "compact_opacity", "border_width", "border_opacity",
@@ -195,7 +196,8 @@ QJsonObject ConfigStore::defaults()
     return {
         {"width", 560}, {"height", 132}, {"scale", 1.0}, {"cover_size", 76}, {"radius", 30},
         {"opacity", 0.94}, {"blur", true}, {"background", "#10121B"}, {"gradient_enabled", true},
-        {"artwork_background", true}, {"artwork_background_strength", 0.75},
+        {"artwork_background", true}, {"artwork_background_strength", 0.75}, {"artwork_accent", true},
+        {"surface_highlight", true},
         {"gradient_color", "#242344"}, {"text_color", "#F5F5FA"}, {"secondary_color", "#9394AB"},
         {"accent_color", "#9B8CFF"}, {"progress_color", "#9B8CFF"}, {"progress_height", 3},
         {"icon_color", "#F5F5FA"}, {"icon_size", 18}, {"font_family", "Inter"}, {"font_size", 14}, {"font_weight", 600},
@@ -204,6 +206,7 @@ QJsonObject ConfigStore::defaults()
         {"monitor_positions", QJsonObject{}}, {"anchor", "top_center"}, {"offset_y", 12},
         {"auto_hide_seconds", 0}, {"hotkey", "Ctrl+Alt+M"}, {"click_through", false}, {"startup", false}, {"position_locked", false},
         {"idle_collapse", true}, {"idle_collapse_seconds", 3},
+        {"dock_hover_delay", 160}, {"dock_hover_fullscreen", false},
         {"compact_width", 156}, {"compact_height", 32}, {"compact_visible_height", 8},
         {"compact_radius", 16}, {"compact_opacity", 0.94}, {"compact_background", "#10121B"},
         {"border_width", 0.0}, {"border_opacity", 0.22}, {"border_color", "#9B8CFF"},
@@ -249,7 +252,8 @@ QList<ConfigStore::Preset> ConfigStore::presets()
                 {"gradient_enabled", false}, {"background", "#F2F0E9"}, {"gradient_color", "#F2F0E9"},
                 {"text_color", "#242C31"}, {"secondary_color", "#59666D"}, {"icon_color", "#242C31"},
                 {"accent_color", "#306C61"}, {"progress_color", "#306C61"}, {"border_width", 1.0},
-                {"border_color", "#7B8A85"}, {"border_opacity", 0.35}, {"compact_background", "#F2F0E9"}},
+                {"border_color", "#7B8A85"}, {"border_opacity", 0.35}, {"compact_background", "#F2F0E9"},
+                {"artwork_accent", false}},
                 {{"cover", false}, {"source", false}})},
         {"studio", QStringLiteral("Studio · музыкальная карточка"),
             QStringLiteral("Вертикальная карточка с большой обложкой, альбомом и отдельным рядом управления. IBM Plex Sans, 460 × 280."),
@@ -266,7 +270,8 @@ QList<ConfigStore::Preset> ConfigStore::presets()
                 {"background", "#111815"}, {"gradient_color", "#111815"}, {"accent_color", "#A0E8B5"},
                 {"progress_color", "#A0E8B5"}, {"text_color", "#EAF4EB"}, {"icon_color", "#EAF4EB"},
                 {"secondary_color", "#9CAE9F"}, {"border_width", 1.0}, {"border_opacity", 0.4},
-                {"border_color", "#A0E8B5"}, {"compact_background", "#111815"}, {"compact_radius", 6}},
+                {"border_color", "#A0E8B5"}, {"compact_background", "#111815"}, {"compact_radius", 6},
+                {"artwork_accent", false}, {"surface_highlight", false}},
                 {{"cover", false}, {"source", false}})}
     };
 }

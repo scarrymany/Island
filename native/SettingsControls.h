@@ -61,6 +61,7 @@ public:
     void setSuffix(const QString& suffix);
     void setAccessibleName(const QString& name);
     void setColors(const QColor& accent, const QColor& track, const QColor& text);
+    void setMotion(bool enabled);
 
     [[nodiscard]] double value() const;
     [[nodiscard]] QDoubleSpinBox* editor() const;

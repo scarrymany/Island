@@ -14,6 +14,7 @@
 #include <memory>
 
 class QMenu;
+class IslandMenu;
 
 class Application final : public QObject {
     Q_OBJECT
@@ -43,7 +44,7 @@ private:
     SettingsWindow settings_;
     HudWindow hud_;
     QSystemTrayIcon tray_;
-    std::unique_ptr<QMenu> trayMenu_;
+    std::unique_ptr<IslandMenu> trayMenu_;
     QMenu* profilesMenu_ = nullptr;
     QPointer<ReleaseNotesDialog> releaseNotes_;
     QTimer volumeTimer_;

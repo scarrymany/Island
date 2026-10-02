@@ -1,4 +1,5 @@
 #include "SettingsControls.h"
+#include "SmoothScroll.h"
 
 #include <QAbstractItemView>
 #include <QAccessible>
@@ -70,12 +71,16 @@ bool visualEvent(QEvent::Type type)
 
 class TrackSlider final : public QSlider {
 public:
-    explicit TrackSlider(QWidget* parent) : QSlider(Qt::Horizontal, parent)
+    explicit TrackSlider(QWidget* parent) : QSlider(Qt::Horizontal, parent), motion_(this)
     {
         setAttribute(Qt::WA_Hover);
         setFocusPolicy(Qt::StrongFocus);
         setMinimumHeight(ControlHeight);
+        connect(this, &QSlider::sliderPressed, this, [this] { emphasize(); });
+        connect(this, &QSlider::sliderReleased, this, [this] { emphasize(); });
     }
+
+    void setMotion(bool enabled) { motionEnabled_ = enabled; if (!enabled) { motion_.stopAll(); emphasis_ = target(); update(); } }
 
     void setColors(const QColor& accent, const QColor& track, const QColor& text)
     {
@@ -112,19 +117,45 @@ protected:
             painter.drawEllipse(QPointF(centerX, centerY), 10, 10);
             painter.setPen(Qt::NoPen);
         }
+        const double emphasis = std::clamp(emphasis_, 0.0, 1.4);
+        if (emphasis > 0.01 && isEnabled()) {
+            QColor halo = color;
+            halo.setAlphaF(0.16f * static_cast<float>(std::min(1.0, emphasis)));
+            painter.setBrush(halo);
+            painter.drawEllipse(QPointF(centerX, centerY), 6 + 6 * emphasis, 6 + 6 * emphasis);
+        }
         painter.setBrush(color);
-        painter.drawEllipse(QPointF(centerX, centerY), isSliderDown() ? 7.0 : 6.0, isSliderDown() ? 7.0 : 6.0);
+        const double knob = 6.0 + 1.6 * emphasis;
+        painter.drawEllipse(QPointF(centerX, centerY), knob, knob);
     }
 
     bool event(QEvent* event) override
     {
         const bool result = QSlider::event(event);
+        if (event->type() == QEvent::HoverEnter || event->type() == QEvent::HoverLeave || event->type() == QEvent::EnabledChange)
+            emphasize();
         if (visualEvent(event->type()))
             update();
         return result;
     }
 
 private:
+    double target() const { return !isEnabled() ? 0.0 : isSliderDown() ? 1.0 : underMouse() ? 0.55 : 0.0; }
+
+    void emphasize()
+    {
+        const double goal = target();
+        if (!motionEnabled_ || !isVisible()) { motion_.stopAll(); emphasis_ = goal; update(); return; }
+        if (motion_.retarget(QStringLiteral("emphasis"), goal)) return;
+        motion_.spring(QStringLiteral("emphasis"), emphasis_, goal, {0.24, 0.72}, [this](double value) {
+            emphasis_ = value;
+            update();
+        });
+    }
+
+    AnimationClock motion_;
+    double emphasis_ = 0;
+    bool motionEnabled_ = true;
     QColor accent_{"#F4F4F5"};
     QColor track_{"#333338"};
     QColor text_{"#F4F4F5"};
@@ -306,6 +337,7 @@ public:
         list_->setMouseTracking(true);
         list_->installEventFilter(this);
         list_->viewport()->installEventFilter(this);
+        SmoothScroll::install(list_);
         connect(list_, &QListView::clicked, this, [this](const QModelIndex& index) { accept(index); });
         connect(list_, &QListView::entered, this, [this](const QModelIndex& index) {
             if (selectable(index)) list_->setCurrentIndex(index);
@@ -327,6 +359,7 @@ public:
         motionEnabled_ = enabled;
         durationMs_ = std::clamp(durationMs, 0, 10000);
         animation_.setRefreshRate(refreshRate);
+        SmoothScroll::setMotion(list_, enabled && durationMs_ > 0);
         if (!enabled || durationMs_ == 0) {
             animation_.stopAll();
             closingFrame_->hide();
@@ -351,6 +384,7 @@ public:
             "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
             "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }")
             .arg(mix(track, text, 0.2).name()));
+        SmoothScroll::setColor(list_, text);
         update();
     }
 
@@ -973,6 +1007,8 @@ void SettingsSlider::setColors(const QColor& accent, const QColor& track, const 
         .arg(text.name(), mix(track, text, 0.08).name(), mix(track, accent, 0.7).name(), mix(track, text, 0.4).name(), track.name()));
     updateEditorWidth();
 }
+
+void SettingsSlider::setMotion(bool enabled) { static_cast<TrackSlider*>(slider_)->setMotion(enabled); }
 
 double SettingsSlider::value() const { return editor_->value(); }
 QDoubleSpinBox* SettingsSlider::editor() const { return editor_; }

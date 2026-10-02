@@ -22,15 +22,27 @@ public:
     static bool isStartupEnabled();
     static bool applyBackdrop(WId hwnd, bool enabled, const QString& tint = QStringLiteral("#10121b"),
                               double opacity = 0.9);
+    // hitBounds, when valid, replaces the card as the native window region. Animated
+    // overlays pass their whole frame so a moving card is never clipped mid-frame.
     static bool applyOverlayBackdrop(WId hwnd, bool enabled, const QRectF& cardBounds, double radius,
                                      double devicePixelRatio, const QString& tint = QStringLiteral("#10121b"),
-                                     double opacity = 0.9, const QRectF& clipBounds = {});
+                                     double opacity = 0.9, const QRectF& clipBounds = {},
+                                     const QRectF& hitBounds = {});
     static bool updateOverlayRegion(WId hwnd, const QRectF& cardBounds, double radius,
-                                    double devicePixelRatio, const QRectF& clipBounds = {});
+                                    double devicePixelRatio, const QRectF& clipBounds = {},
+                                    const QRectF& hitBounds = {});
     static void setOverlayOpacity(WId hwnd, double opacity);
     static void releaseOverlayBackdrop(WId hwnd);
     static void setClickThrough(WId hwnd, bool enabled);
     static void ensureTopmost(WId hwnd);
+
+    // Pointer context for hover decisions. A hidden or suppressed cursor means the
+    // user cannot see what they would be hovering (games, video players, touch).
+    static bool cursorVisible();
+    static bool mouseButtonsDown();
+    // True when another process owns a borderless window covering the whole monitor
+    // that contains reference (a game or fullscreen video), or a Direct3D exclusive app runs.
+    static bool foregroundIsFullscreen(WId reference);
 
     double volume(QString* error = nullptr);
     bool setVolume(double value, QString* error = nullptr);

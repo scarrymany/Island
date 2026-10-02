@@ -28,15 +28,21 @@ private:
     }
     static QPoint point(HudWindow& hud, const QString& name) {
         const double scale = hud.config()["scale"].toDouble(1);
-        const int inset = qCeil(14 * scale);
-        return (hud.elementRects()[name].center() * scale + QPointF(inset, inset)).toPoint();
+        return (hud.elementRects()[name].center() * scale + hud.cardOrigin()).toPoint();
     }
     static QRect pixelRect(HudWindow& hud, const QString& name) {
         const double scale = hud.config()["scale"].toDouble(1);
-        const int inset = qCeil(14 * scale);
         const auto rect = hud.elementRects().value(name);
-        return QRectF(rect.topLeft() * scale + QPointF(inset, inset), rect.size() * scale).toAlignedRect();
+        return QRectF(rect.topLeft() * scale + hud.cardOrigin(), rect.size() * scale).toAlignedRect();
     }
+    // The window is a stable transparent frame; the card is what users see and touch.
+    static QPoint cardCenter(HudWindow& hud) {
+        return (hud.cardOrigin() + QPointF(hud.cardGeometry().width() / 2, hud.cardGeometry().height() / 2)).toPoint();
+    }
+    static QPoint header(HudWindow& hud) {
+        return (hud.cardOrigin() + QPointF(hud.cardGeometry().width() / 2, 1)).toPoint();
+    }
+    static bool docked(HudWindow& hud) { return hud.isCollapsed() && hud.dockProgress() >= 1; }
     static QByteArray artwork(const QColor& left, const QColor& right = {}) {
         QImage image(100, 100, QImage::Format_RGB32);
         image.fill(left);
@@ -60,10 +66,12 @@ private:
         result["opacity"] = 0.6;
         result["artwork_background"] = true;
         result["artwork_background_strength"] = 1.0;
+        result["surface_highlight"] = false;
         return result;
     }
     static QColor backgroundPixel(HudWindow& hud) {
-        return hud.grab().toImage().pixelColor(hud.width() / 2, hud.height() / 2);
+        const QImage image = hud.grab().toImage();
+        return image.pixelColor((QPointF(cardCenter(hud)) * image.devicePixelRatio()).toPoint());
     }
     static QImage timeAt(HudWindow& reference, MediaSnapshot snapshot, double position) {
         snapshot.position = position;
@@ -96,7 +104,7 @@ private slots:
         const QRect progress = pixelRect(hud, "progress");
         const QPoint start(progress.left() + progress.width() / 4, progress.center().y());
         const QPoint finish(progress.left() + progress.width() * 3 / 4, progress.center().y());
-        const double target = (finish.x() - 14 - hud.elementRects()["progress"].left())
+        const double target = (finish.x() - hud.cardOrigin().x() - hud.elementRects()["progress"].left())
             / hud.elementRects()["progress"].width() * media.duration;
         QSignalSpy commands(&hud, &HudWindow::command);
         QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, start);
@@ -235,9 +243,9 @@ private slots:
         HudWindow hud(c);
         MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
         hud.setSnapshot(media); hud.reveal();
-        const QPoint header(hud.width() / 2, 15);
-        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header);
-        QTest::mouseMove(&hud, header + QPoint(20, 10));
+        const QPoint top = header(hud);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, top);
+        QTest::mouseMove(&hud, top + QPoint(20, 10));
         const QRect geometry = hud.geometry();
         const QPoint progress = point(hud, "progress");
         QSignalSpy commands(&hud, &HudWindow::command);
@@ -267,7 +275,7 @@ private slots:
             const int step = frame < 40 ? frame : 79 - frame;
             cursor = QPoint(bar.left() + qRound(bar.width() * (0.1 + step * .02)), bar.center().y());
             QTest::mouseMove(&hud, cursor);
-            const double target = (cursor.x() - 14 - logicalBar.left()) / logicalBar.width() * media.duration;
+            const double target = (cursor.x() - hud.cardOrigin().x() - logicalBar.left()) / logicalBar.width() * media.duration;
             media.position = 10 + frame * .1;
             media.playing = frame < 25 || frame >= 50;
             media.updatedAt = QDateTime::currentMSecsSinceEpoch();
@@ -429,8 +437,8 @@ private slots:
         MediaSnapshot track; track.active = true; track.cover = artwork(Qt::red, Qt::blue);
         hud.setSnapshot(track);
         const QImage pixels = hud.grab().toImage();
-        const int middle = hud.width() / 2;
-        const int y = hud.height() / 2;
+        const int middle = cardCenter(hud).x();
+        const int y = cardCenter(hud).y();
         const QColor left = pixels.pixelColor(middle - 70, y);
         const QColor right = pixels.pixelColor(middle + 70, y);
         QVERIFY(left.red() > right.red() + 10);
@@ -611,13 +619,13 @@ private slots:
         MediaSnapshot media; media.active = true; media.canSeek = true; media.duration = 200;
         hud.setSnapshot(media); hud.reveal();
         const QRect initial = hud.geometry();
-        const QPoint header(hud.width() / 2, 15);
+        const QPoint top = header(hud);
         QSignalSpy changes(&hud, &HudWindow::configChanged);
         QSignalSpy commands(&hud, &HudWindow::command);
         QSignalSpy volume(&hud, &HudWindow::volumeChanged);
-        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header);
-        QTest::mouseMove(&hud, header + QPoint(25, 20));
-        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, header + QPoint(25, 20));
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, top);
+        QTest::mouseMove(&hud, top + QPoint(25, 20));
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, top + QPoint(25, 20));
         QCOMPARE(hud.geometry(), initial); QCOMPARE(changes.size(), 0);
         QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "play"));
         QTest::mouseClick(&hud, Qt::LeftButton, Qt::NoModifier, point(hud, "progress"));
@@ -644,14 +652,14 @@ private slots:
     void enablingPositionLockCancelsAnInFlightWindowDrag() {
         auto c = config(); c["idle_collapse"] = false;
         HudWindow hud(c); hud.reveal();
-        const QPoint header(hud.width() / 2, 15);
-        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header);
-        QTest::mouseMove(&hud, header + QPoint(15, 10));
+        const QPoint top = header(hud);
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, top);
+        QTest::mouseMove(&hud, top + QPoint(15, 10));
         c["position_locked"] = true; hud.applyConfig(c);
         const QRect locked = hud.geometry();
         QSignalSpy changes(&hud, &HudWindow::configChanged);
-        QTest::mouseMove(&hud, header + QPoint(55, 30));
-        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, header + QPoint(55, 30));
+        QTest::mouseMove(&hud, top + QPoint(55, 30));
+        QTest::mouseRelease(&hud, Qt::LeftButton, Qt::NoModifier, top + QPoint(55, 30));
         QCOMPARE(hud.geometry(), locked); QCOMPARE(changes.size(), 0);
     }
     void resettingPositionRecoversHiddenHudAndPreservesOtherMonitors() {
@@ -671,8 +679,9 @@ private slots:
         QVERIFY(!positions.contains(screen->name()));
         QCOMPARE(positions["Other saved monitor"].toArray(), (QJsonArray{240, 180}));
         const QRect area = screen->availableGeometry();
-        QCOMPARE(hud.x(), area.x() + std::max(0, (area.width() - hud.width()) / 2));
-        QCOMPARE(hud.y(), area.y() + std::min(12, std::max(0, area.height() - hud.height())));
+        const QRect window = hud.cardGeometry().toAlignedRect().adjusted(-14, -14, 14, 14);
+        QCOMPARE(window.x(), area.x() + std::max(0, (area.width() - window.width()) / 2));
+        QCOMPARE(window.y(), area.y() + std::min(12, std::max(0, area.height() - window.height())));
         QCOMPARE(changes.size(), 1);
     }
     void roundedEdgesContainPartialAlphaAtEveryScale_data() {
@@ -689,17 +698,17 @@ private slots:
         HudWindow hud(c); hud.reveal();
         const QImage image = hud.grab().toImage();
         const double ratio = image.devicePixelRatio();
-        const int inset = qRound(qCeil(14 * scale) * ratio);
+        const QPoint corner = (hud.cardOrigin() * ratio).toPoint();
         const int radius = qRound(30 * scale * ratio);
         int partial = 0;
-        for (int y = inset; y < inset + radius; ++y)
-            for (int x = inset; x < inset + radius; ++x) {
+        for (int y = corner.y(); y < corner.y() + radius; ++y)
+            for (int x = corner.x(); x < corner.x() + radius; ++x) {
                 const int alpha = image.pixelColor(x, y).alpha();
                 if (alpha > 0 && alpha < 255) ++partial;
             }
         QVERIFY2(partial > radius / 2, "Rounded contour lost its per-pixel antialiasing");
-        QCOMPARE(image.pixelColor(inset, inset).alpha(), 0);
-        QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2).alpha(), 255);
+        QCOMPARE(image.pixelColor(corner).alpha(), 0);
+        QCOMPARE(image.pixelColor((QPointF(cardCenter(hud)) * ratio).toPoint()).alpha(), 255);
     }
     void dragElementIsSaved() {
         HudWindow hud(config()); hud.setEditing(true);
@@ -741,42 +750,46 @@ private slots:
         auto effects = c["animations"].toObject(); effects["dock"] = false; c["animations"] = effects;
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
         HudWindow hud(c); hud.reveal();
-        const auto expanded = hud.geometry();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        const auto expanded = hud.cardGeometry();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
         QVERIFY(hud.isVisible());
-        QCOMPARE(hud.size(), QSize(184, 60));
-        QCOMPARE(hud.y() + hud.height() - 14, hud.screen()->geometry().top() + 8);
+        QCOMPARE(hud.cardGeometry().size(), QSizeF(156, 32));
+        QCOMPARE(hud.cardGeometry().bottom(), hud.screen()->geometry().top() + 8.0);
         MediaSnapshot media; media.active = true; media.title = "Next track";
         hud.setSnapshot(media);
-        QCOMPARE(hud.size(), QSize(184, 60));
-        QEnterEvent enter(QPointF(20, 40), QPointF(20, 40), QPointF(hud.pos() + QPoint(20, 40)));
+        QCOMPARE(hud.cardGeometry().size(), QSizeF(156, 32));
+        // Hovering the strip shows intent immediately but opens only after a short dwell.
+        const QPoint handle = hud.mapFromGlobal(hud.cardGeometry().center().toPoint());
+        QEnterEvent enter(handle, handle, hud.mapToGlobal(handle));
         QApplication::sendEvent(&hud, &enter);
-        QCOMPARE(hud.geometry(), expanded);
+        QVERIFY(hud.isCollapsed());
+        QTRY_COMPARE_WITH_TIMEOUT(hud.cardGeometry(), expanded, 1000);
     }
     void editingBlocksDockingAndDisablingRestoresSize() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
         auto effects = c["animations"].toObject(); effects["dock"] = false; c["animations"] = effects;
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
         HudWindow hud(c); hud.setEditing(true);
-        const auto expanded = hud.geometry();
-        QTest::qWait(1100); QCOMPARE(hud.geometry(), expanded);
+        const auto expanded = hud.cardGeometry();
+        QTest::qWait(1100); QCOMPARE(hud.cardGeometry(), expanded); QVERIFY(!hud.isCollapsed());
         hud.setEditing(false);
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
         c["idle_collapse"] = false; hud.applyConfig(c);
-        QCOMPARE(hud.geometry(), expanded);
+        QCOMPARE(hud.cardGeometry(), expanded);
     }
     void manualHideAndEditingInterruptDocking() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
         auto effects = c["animations"].toObject(); effects["dock"] = false; c["animations"] = effects;
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
-        HudWindow hud(c); hud.reveal(); const auto expanded = hud.geometry();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        HudWindow hud(c); hud.reveal(); const auto expanded = hud.cardGeometry();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
         hud.conceal(true);
         MediaSnapshot media; media.active = true; media.title = "Hidden track"; hud.setSnapshot(media);
         QEnterEvent enter({}, {}, {}); QApplication::sendEvent(&hud, &enter);
+        QTest::qWait(250);
         QVERIFY(!hud.isVisible());
         hud.setEditing(true);
-        QVERIFY(hud.isVisible()); QCOMPARE(hud.geometry(), expanded);
+        QVERIFY(hud.isVisible()); QCOMPARE(hud.cardGeometry(), expanded);
     }
     void pointerAtDockHandleDoesNotCauseRepeatedCollapse() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
@@ -784,15 +797,17 @@ private slots:
         auto effects = c["animations"].toObject(); effects["dock"] = false; c["animations"] = effects;
         const auto screen = QGuiApplication::primaryScreen()->geometry();
         QCursor::setPos(screen.bottomRight());
-        HudWindow hud(c); hud.reveal(); const auto expanded = hud.geometry();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
-        QCursor::setPos(QPoint(hud.geometry().center().x(), screen.top() + 2));
+        HudWindow hud(c); hud.reveal(); const auto expanded = hud.cardGeometry();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
+        QCursor::setPos(QPoint(qRound(hud.cardGeometry().center().x()), screen.top() + 2));
         QEnterEvent enter({}, {}, QPointF(QCursor::pos())); QApplication::sendEvent(&hud, &enter);
+        QTRY_COMPARE_WITH_TIMEOUT(hud.cardGeometry(), expanded, 1000);
+        // The expanded card no longer covers the screen edge; the handle keeps it open.
         QEvent leave(QEvent::Leave); QApplication::sendEvent(&hud, &leave);
         QTest::qWait(1300);
-        QVERIFY(hud.isVisible()); QCOMPARE(hud.geometry(), expanded);
+        QVERIFY(hud.isVisible()); QCOMPARE(hud.cardGeometry(), expanded);
         QCursor::setPos(screen.bottomRight());
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
         QVERIFY(hud.isVisible());
     }
     void configChangeDuringDockAnimationSettlesToExpandedGeometry() {
@@ -800,35 +815,35 @@ private slots:
         auto effects = c["animations"].toObject(); effects["dock"] = true; c["animations"] = effects;
         c["animation_duration"] = 500;
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
-        HudWindow hud(c); hud.reveal(); const int expandedWidth = hud.width();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expandedWidth, 1800);
+        HudWindow hud(c); hud.reveal();
+        QTRY_VERIFY_WITH_TIMEOUT(hud.isCollapsed() && hud.dockProgress() > 0.1, 1800);
         c["idle_collapse"] = false; c["width"] = 700; hud.applyConfig(c);
         QTest::qWait(550);
-        QCOMPARE(hud.width(), 728); QVERIFY(hud.isVisible());
+        QCOMPARE(hud.cardGeometry().width(), 700.0); QVERIFY(!hud.isCollapsed()); QVERIFY(hud.isVisible());
     }
     void hidingDuringDragDoesNotLeaveIdleBlocked() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
         auto effects = c["animations"].toObject(); effects["dock"] = false; c["animations"] = effects;
-        HudWindow hud(c); hud.reveal(); const int expandedWidth = hud.width();
-        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, QPoint(hud.width() / 2, 15));
+        HudWindow hud(c); hud.reveal();
+        QTest::mousePress(&hud, Qt::LeftButton, Qt::NoModifier, header(hud));
         hud.conceal(true); hud.reveal(true);
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
         QEvent leave(QEvent::Leave); QApplication::sendEvent(&hud, &leave);
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expandedWidth, 1800);
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
     }
     void screenRelayoutDuringExpansionRestartsIdleTimer() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
-        HudWindow hud(c); hud.reveal(); const QRect expanded = hud.geometry();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        HudWindow hud(c); hud.reveal(); const QRectF expanded = hud.cardGeometry();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
         auto effects = c["animations"].toObject(); effects["dock"] = true;
         c["animations"] = effects; c["animation_duration"] = 400;
         hud.applyConfig(c); hud.reveal(true); QTest::qWait(40);
         auto* screen = QGuiApplication::primaryScreen();
         QVERIFY(QMetaObject::invokeMethod(screen, "availableGeometryChanged", Qt::DirectConnection,
             Q_ARG(QRect, screen->availableGeometry())));
-        QTRY_COMPARE_WITH_TIMEOUT(hud.geometry(), expanded, 250);
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        QTRY_COMPARE_WITH_TIMEOUT(hud.cardGeometry(), expanded, 250);
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 2500);
         QVERIFY(hud.isVisible());
     }
     void mediaInactivityAndResumeKeepDockHandleAvailable() {
@@ -836,26 +851,26 @@ private slots:
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
         HudWindow hud(c);
         MediaSnapshot media; media.active = true; media.playing = true; media.title = "Track";
-        hud.setSnapshot(media); hud.reveal(); const QRect expanded = hud.geometry();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
-        const QRect docked = hud.geometry();
+        hud.setSnapshot(media); hud.reveal(); const QRectF expanded = hud.cardGeometry();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 2500);
+        const QRectF strip = hud.cardGeometry();
         media.active = false; media.playing = false; hud.setSnapshot(media);
-        QVERIFY(hud.isVisible()); QCOMPARE(hud.geometry(), docked);
+        QVERIFY(hud.isVisible()); QCOMPARE(hud.cardGeometry(), strip);
         media.active = true; media.playing = true; hud.setSnapshot(media);
-        QVERIFY(hud.isVisible()); QCOMPARE(hud.geometry(), docked);
+        QVERIFY(hud.isVisible()); QCOMPARE(hud.cardGeometry(), strip);
         QVERIFY(hud.windowOpacity() > .99);
-        hud.reveal(true); QCOMPARE(hud.geometry(), expanded);
+        hud.reveal(true); QTRY_COMPARE_WITH_TIMEOUT(hud.cardGeometry(), expanded, 1500);
     }
     void slowExpansionFinishesBeforeIdleTimerStarts() {
         auto c = config(); c["idle_collapse"] = true; c["idle_collapse_seconds"] = 1;
         auto effects = c["animations"].toObject(); effects["dock"] = false; c["animations"] = effects;
         QCursor::setPos(QGuiApplication::primaryScreen()->geometry().bottomRight());
-        HudWindow hud(c); hud.reveal(); const auto expanded = hud.geometry();
-        QTRY_VERIFY_WITH_TIMEOUT(hud.width() < expanded.width(), 1800);
+        HudWindow hud(c); hud.reveal(); const auto expanded = hud.cardGeometry();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 1800);
         effects["dock"] = true; c["animations"] = effects; c["animation_duration"] = 1600;
         hud.applyConfig(c); hud.reveal(true);
-        QTRY_COMPARE_WITH_TIMEOUT(hud.geometry(), expanded, 2000);
-        QVERIFY(hud.isVisible());
+        QTRY_COMPARE_WITH_TIMEOUT(hud.cardGeometry(), expanded, 4000);
+        QVERIFY(hud.isVisible()); QVERIFY(!hud.isCollapsed());
     }
 };
 QTEST_MAIN(HudTest)

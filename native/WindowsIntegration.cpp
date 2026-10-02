@@ -5,6 +5,7 @@
 #endif
 #include <windows.h>
 #include <dwmapi.h>
+#include <shellapi.h>
 #include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <wrl/client.h>
@@ -48,6 +49,9 @@ constexpr int AccentAcrylic = 4;
 constexpr int AccentHostBackdrop = 5;
 constexpr DWORD HostBackdropAttribute = 17;
 constexpr double RegionCoordinateLimit = (1 << 26) - 2;
+// Keeps the circular Composition clip inside the painted continuous-corner card edge.
+constexpr double BackdropInset = 1.0;
+constexpr DWORD CursorSuppressed = 0x00000002;
 
 QSet<int> activeHotkeys;
 int nextHotkeyId = FirstHotkeyId;
@@ -269,48 +273,35 @@ public:
         radius_ = radius;
         ratio_ = ratio;
         clip_ = clip;
+        RECT client{};
         POINT origin{};
-        if (!ClientToScreen(foreground_, &origin)) return false;
-        const int left = static_cast<int>(std::floor(card.left() * ratio));
-        const int top = static_cast<int>(std::floor(card.top() * ratio));
-        const int width = static_cast<int>(std::ceil(card.right() * ratio)) - left;
-        const int height = static_cast<int>(std::ceil(card.bottom() * ratio)) - top;
-        if (!SetWindowPos(window_, foreground_, origin.x + left, origin.y + top, width, height, SWP_NOACTIVATE)) return false;
-        const winrt::Windows::Foundation::Numerics::float2 size{static_cast<float>(card.width() * ratio), static_cast<float>(card.height() * ratio)};
+        if (!GetClientRect(foreground_, &client) || !ClientToScreen(foreground_, &origin)) return false;
+        const int width = std::max<LONG>(1, client.right - client.left);
+        const int height = std::max<LONG>(1, client.bottom - client.top);
+        // The surface spans the whole overlay and only its visual changes per frame.
+        // Moving or resizing a second HWND on every animation frame lags the card.
+        const QRect frame(origin.x, origin.y, width, height);
+        if (frame != frame_) {
+            if (!SetWindowPos(window_, foreground_, frame.x(), frame.y(), width, height, SWP_NOACTIVATE)) return false;
+            frame_ = frame;
+            root_.Size({static_cast<float>(width), static_cast<float>(height)});
+        }
+        const double inset = std::min({BackdropInset, card.width() / 2, card.height() / 2});
+        const QRectF shape = card.adjusted(inset, inset, -inset, -inset);
+        const winrt::Windows::Foundation::Numerics::float2 size{static_cast<float>(shape.width() * ratio),
+                                                               static_cast<float>(shape.height() * ratio)};
         if (sprite_.Size() != size) { sprite_.Size(size); rounded_.Size(size); }
-        root_.Size({static_cast<float>(width), static_cast<float>(height)});
-        sprite_.Offset({static_cast<float>(card.left() * ratio - left), static_cast<float>(card.top() * ratio - top), 0});
-        const float corner = static_cast<float>(radius * ratio);
+        sprite_.Offset({static_cast<float>(shape.left() * ratio), static_cast<float>(shape.top() * ratio), 0});
+        const float corner = static_cast<float>(std::max(0.0, radius - inset) * ratio);
         rounded_.CornerRadius({corner, corner});
         const QRectF visible = clip.isValid() ? card.intersected(clip) : card;
         clippedOut_ = visible.isEmpty();
-        screenClip_.LeftInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(visible.left() * ratio) - left)) : 0);
-        screenClip_.TopInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(visible.top() * ratio) - top)) : 0);
-        screenClip_.RightInset(clip.isValid() ? static_cast<float>(std::max(0.0, width + left - std::floor(visible.right() * ratio))) : 0);
-        screenClip_.BottomInset(clip.isValid() ? static_cast<float>(std::max(0.0, height + top - std::floor(visible.bottom() * ratio))) : 0);
-        // The Composition geometry owns rounded-edge coverage. A binary rounded
-        // HWND region would cut off its antialiased boundary pixels. Keep only the
-        // rectangular screen constraint; this surface is already input-transparent.
-        HRGN region = CreateRectRgn(0, 0, width, height);
-        if (!region) return false;
-        if (clip.isValid()) {
-            HRGN clipping = clippedOut_ ? CreateRectRgn(0, 0, 0, 0)
-                : CreateRectRgn(static_cast<int>(std::ceil((visible.left() - card.left()) * ratio)),
-                    static_cast<int>(std::ceil((visible.top() - card.top()) * ratio)),
-                    static_cast<int>(std::floor((visible.right() - card.left()) * ratio)),
-                    static_cast<int>(std::floor((visible.bottom() - card.top()) * ratio)));
-            if (!clipping || CombineRgn(region, region, clipping, RGN_AND) == ERROR) {
-                if (clipping) DeleteObject(clipping);
-                DeleteObject(region);
-                return false;
-            }
-            DeleteObject(clipping);
-        }
-        HRGN current = CreateRectRgn(0, 0, 0, 0);
-        const bool same = current && GetWindowRgn(window_, current) != ERROR && EqualRgn(current, region);
-        if (current) DeleteObject(current);
-        if (same) DeleteObject(region);
-        else if (!SetWindowRgn(window_, region, TRUE)) { DeleteObject(region); return false; }
+        // The Composition geometry owns rounded-edge coverage; a binary HWND region
+        // would cut its antialiased boundary. Screen limits use an inset clip instead.
+        screenClip_.LeftInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(clip.left() * ratio))) : 0);
+        screenClip_.TopInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(clip.top() * ratio))) : 0);
+        screenClip_.RightInset(clip.isValid() ? static_cast<float>(std::max(0.0, width - std::floor(clip.right() * ratio))) : 0);
+        screenClip_.BottomInset(clip.isValid() ? static_cast<float>(std::max(0.0, height - std::floor(clip.bottom() * ratio))) : 0);
         syncVisibility();
         return true;
     }
@@ -321,7 +312,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* event) override {
         if (event->type() == QEvent::Hide) ShowWindow(window_, SW_HIDE);
         if (event->type() == QEvent::WindowStateChange) syncVisibility();
-        if (event->type() == QEvent::Move && bounds_.isValid()) {
+        if ((event->type() == QEvent::Move || event->type() == QEvent::Resize) && bounds_.isValid()) {
             try { update(bounds_, radius_, ratio_, clip_); }
             catch (const winrt::hresult_error& error) {
                 qWarning() << "Cannot move overlay backdrop:" << QString::fromWCharArray(error.message().c_str());
@@ -335,15 +326,17 @@ protected:
 
 private:
     void syncVisibility() {
-        ShowWindow(window_, enabled_ && !clippedOut_ && IsWindowVisible(foreground_) && !IsIconic(foreground_)
-                                ? SW_SHOWNOACTIVATE : SW_HIDE);
-        SetWindowPos(window_, foreground_, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+        const bool shown = enabled_ && !clippedOut_ && IsWindowVisible(foreground_) && !IsIconic(foreground_);
+        if (shown == static_cast<bool>(IsWindowVisible(window_))) return;
+        ShowWindow(window_, shown ? SW_SHOWNOACTIVATE : SW_HIDE);
+        if (shown) SetWindowPos(window_, foreground_, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
     }
 
     HWND foreground_ = nullptr;
     HWND window_ = nullptr;
     bool enabled_ = false;
     bool clippedOut_ = false;
+    QRect frame_;
     QRectF bounds_;
     QRectF clip_;
     double radius_ = 0;
@@ -622,11 +615,14 @@ bool WindowsIntegration::applyBackdrop(WId window, bool enabled, const QString& 
 }
 
 bool WindowsIntegration::updateOverlayRegion(WId window, const QRectF& cardBounds, double radius,
-                                              double devicePixelRatio, const QRectF& clipBounds) {
+                                              double devicePixelRatio, const QRectF& clipBounds,
+                                              const QRectF& hitBounds) {
     const HWND hwnd = reinterpret_cast<HWND>(window);
     if (!hwnd || GetWindowThreadProcessId(hwnd, nullptr) != GetCurrentThreadId()
-        || !validOverlayGeometry(cardBounds, radius, devicePixelRatio, clipBounds)) return false;
+        || !validOverlayGeometry(cardBounds, radius, devicePixelRatio, clipBounds)
+        || (!hitBounds.isNull() && !validOverlayGeometry(hitBounds, 0, devicePixelRatio, {}))) return false;
     radius = std::min(radius, std::min(cardBounds.width(), cardBounds.height()) / 2.0);
+    const QRectF regionBounds = hitBounds.isValid() ? hitBounds : cardBounds;
     RECT frame{};
     POINT origin{};
     if (!GetWindowRect(hwnd, &frame) || !ClientToScreen(hwnd, &origin)) return false;
@@ -637,9 +633,9 @@ bool WindowsIntegration::updateOverlayRegion(WId window, const QRectF& cardBound
     // The layered Qt window paints the rounded contour with per-pixel alpha.
     // SetWindowRgn is binary and must not trim that antialiasing. Transparent
     // pixels still pass hit tests through to the window underneath on Windows.
-    HRGN desired = CreateRectRgn(x(cardBounds.left()), y(cardBounds.top()),
-        static_cast<int>(std::ceil(cardBounds.right() * devicePixelRatio)) + offsetX,
-        static_cast<int>(std::ceil(cardBounds.bottom() * devicePixelRatio)) + offsetY);
+    HRGN desired = CreateRectRgn(x(regionBounds.left()), y(regionBounds.top()),
+        static_cast<int>(std::ceil(regionBounds.right() * devicePixelRatio)) + offsetX,
+        static_cast<int>(std::ceil(regionBounds.bottom() * devicePixelRatio)) + offsetY);
     if (!desired) return false;
     if (clipBounds.isValid()) {
         HRGN clip = CreateRectRgn(static_cast<int>(std::ceil(clipBounds.left() * devicePixelRatio)) + offsetX,
@@ -667,10 +663,10 @@ bool WindowsIntegration::updateOverlayRegion(WId window, const QRectF& cardBound
 
 bool WindowsIntegration::applyOverlayBackdrop(WId window, bool enabled, const QRectF& cardBounds,
                                                double radius, double devicePixelRatio, const QString& tint,
-                                               double opacity, const QRectF& clipBounds) {
+                                               double opacity, const QRectF& clipBounds, const QRectF& hitBounds) {
     const QColor color(tint);
     if (!color.isValid() || !std::isfinite(opacity) || opacity < 0 || opacity > 1
-        || !updateOverlayRegion(window, cardBounds, radius, devicePixelRatio, clipBounds)) return false;
+        || !updateOverlayRegion(window, cardBounds, radius, devicePixelRatio, clipBounds, hitBounds)) return false;
     const HWND hwnd = reinterpret_cast<HWND>(window);
     // HWND-wide Acrylic ignores SetWindowRgn; only the clipped Composition visual supplies blur.
     applyBackdrop(window, false, tint, opacity);
@@ -733,4 +729,48 @@ void WindowsIntegration::ensureTopmost(WId window) {
                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)) {
         qWarning() << "Cannot keep overlay topmost:" << systemError(GetLastError());
     }
+}
+
+bool WindowsIntegration::cursorVisible() {
+    CURSORINFO info{};
+    info.cbSize = sizeof(info);
+    // An unreadable cursor state must not lock hover out on unusual desktops.
+    if (!GetCursorInfo(&info)) return true;
+    return (info.flags & CURSOR_SHOWING) && !(info.flags & CursorSuppressed);
+}
+
+bool WindowsIntegration::mouseButtonsDown() {
+    for (const int button : {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2}) {
+        if (GetAsyncKeyState(button) & 0x8000) return true;
+    }
+    return false;
+}
+
+bool WindowsIntegration::foregroundIsFullscreen(WId reference) {
+    QUERY_USER_NOTIFICATION_STATE notification{};
+    if (SUCCEEDED(SHQueryUserNotificationState(&notification)) && notification == QUNS_RUNNING_D3D_FULL_SCREEN)
+        return true;
+    const HWND window = GetForegroundWindow();
+    if (!window || IsIconic(window)) return false;
+    DWORD process = 0;
+    GetWindowThreadProcessId(window, &process);
+    if (process == GetCurrentProcessId()) return false;
+    wchar_t name[64]{};
+    GetClassNameW(window, name, static_cast<int>(std::size(name)));
+    for (const wchar_t* shell : {L"Progman", L"WorkerW", L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd"}) {
+        if (wcscmp(name, shell) == 0) return false;
+    }
+    const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONULL);
+    if (!monitor) return false;
+    if (reference && MonitorFromWindow(reinterpret_cast<HWND>(reference), MONITOR_DEFAULTTONEAREST) != monitor)
+        return false;
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    RECT bounds{};
+    if (!GetMonitorInfoW(monitor, &info) || !GetWindowRect(window, &bounds)) return false;
+    const bool covers = bounds.left <= info.rcMonitor.left && bounds.top <= info.rcMonitor.top
+        && bounds.right >= info.rcMonitor.right && bounds.bottom >= info.rcMonitor.bottom;
+    // A maximized captioned window also spans the monitor when the taskbar auto-hides.
+    const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+    return covers && !(IsZoomed(window) && (style & WS_CAPTION) == WS_CAPTION);
 }

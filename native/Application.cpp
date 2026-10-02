@@ -1,6 +1,9 @@
 #include "Application.h"
 #include "AppAssets.h"
 #include "AppInfo.h"
+#include "IslandDialogs.h"
+#include "IslandMenu.h"
+#include "IslandToolTip.h"
 
 #include <QApplication>
 #include <QBuffer>
@@ -46,6 +49,7 @@ Application::Application(bool demo, bool background, QString configPath, QObject
       settings_(&store_), hud_(store_.config()), demo_(demo) {
     const QIcon appIcon = AppAssets::icon();
     qApp->setWindowIcon(appIcon); settings_.setWindowIcon(appIcon); tray_.setIcon(appIcon);
+    IslandToolTip::install();
     settings_.installEventFilter(this);
     setupTray();
     connect(&store_, &ConfigStore::configChanged, this, &Application::applyConfig);
@@ -59,6 +63,8 @@ Application::Application(bool demo, bool background, QString configPath, QObject
     connect(&hud_, &HudWindow::settingsRequested, this, &Application::showSettings);
     connect(&settings_, &SettingsWindow::resetPositionRequested, &hud_, &HudWindow::resetPosition);
     connect(&settings_, &SettingsWindow::releaseNotesRequested, this, &Application::showReleaseNotes);
+    // Tweaking the look expands a docked island so every change is visible at once.
+    connect(&settings_, &SettingsWindow::appearanceEdited, &hud_, [this] { hud_.reveal(); });
     connect(&windows_, &WindowsIntegration::activated, &hud_, &HudWindow::toggle);
     connect(&media_, &MediaBridge::snapshotChanged, this, [this](const MediaSnapshot& snapshot) {
         if (stopping_) return;
@@ -91,7 +97,7 @@ Application::Application(bool demo, bool background, QString configPath, QObject
         updates_.check();
     });
     connect(&settings_, &SettingsWindow::updateInstallRequested, this, [this] {
-        if (QMessageBox::question(&settings_, QStringLiteral("Обновление SCARP ISLAND"),
+        if (IslandDialogs::question(&settings_, QStringLiteral("Обновление SCARP ISLAND"),
                 QStringLiteral("Скачать проверенный установщик и закрыть SCARP ISLAND для обновления?")) == QMessageBox::Yes)
             updates_.downloadAndInstall();
     });
@@ -155,15 +161,16 @@ void Application::shutdown() {
 }
 
 void Application::setupTray() {
-    trayMenu_ = std::make_unique<QMenu>();
+    trayMenu_ = std::make_unique<IslandMenu>();
     trayMenu_->addAction(QStringLiteral("Открыть настройки"), this, &Application::showSettings);
     trayMenu_->addAction(QStringLiteral("Показать / скрыть островок"), &hud_, &HudWindow::toggle);
     trayMenu_->addAction(QStringLiteral("Вернуть островок в исходное положение"), &hud_, &HudWindow::resetPosition);
     trayMenu_->addAction(QStringLiteral("Что нового в %1").arg(AppInfo::Version), this, &Application::showReleaseNotes);
+    trayMenu_->addSeparator();
     auto* editing = trayMenu_->addAction(QStringLiteral("Редактировать расположение")); editing->setCheckable(true);
     connect(editing, &QAction::triggered, this, &Application::setEditing);
     connect(trayMenu_.get(), &QMenu::aboutToShow, this, [this, editing] { editing->setChecked(hud_.editing()); refreshProfiles(); });
-    profilesMenu_ = trayMenu_->addMenu(QStringLiteral("Профили"));
+    profilesMenu_ = trayMenu_->addIslandMenu(QStringLiteral("Профили"));
     trayMenu_->addSeparator();
     trayMenu_->addAction(QStringLiteral("Выход"), this, [this] { shutdown(); QCoreApplication::exit(0); });
     tray_.setContextMenu(trayMenu_.get());
@@ -207,6 +214,13 @@ void Application::applyConfig(const QJsonObject& config) {
         }
     }
     applied_ = effective;
+    IslandMenu::Theme theme;
+    theme.background = QColor(effective["settings_background"].toString("#0A0A0A")).lighter(118);
+    theme.text = QColor(effective["settings_text"].toString("#D4D4D4")).lighter(112);
+    theme.accent = QColor(effective["settings_accent"].toString("#FFFFFF"));
+    theme.fontFamily = effective["settings_font_family"].toString(AppAssets::settingsFontFamily());
+    theme.motion = effective["settings_animations"].toBool(true);
+    IslandMenu::setTheme(theme);
     hud_.applyConfig(effective);
     if (effective != config) {
         QString error;
@@ -281,14 +295,14 @@ bool Application::capture(const QString& directory) {
     }
     QCoreApplication::processEvents();
     const QDir output(directory);
-    bool ok = hud_.grab().save(output.filePath("hud.png"));
+    bool ok = hud_.grab(hud_.captureRect()).save(output.filePath("hud.png"));
     if (demo_) {
         const auto captureConfig = store_.config();
         for (const auto& preset : ConfigStore::presets()) {
             if (!store_.applyPreset(preset.id)) return false;
             hud_.reveal(true);
             QCoreApplication::processEvents();
-            ok = hud_.grab().save(output.filePath("hud-" + preset.id + ".png")) && ok;
+            ok = hud_.grab(hud_.captureRect()).save(output.filePath("hud-" + preset.id + ".png")) && ok;
         }
         if (!store_.update(captureConfig)) return false;
     }

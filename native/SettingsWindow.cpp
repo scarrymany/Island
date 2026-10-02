@@ -4,6 +4,10 @@
 #include "AppInfo.h"
 #include "SettingsControls.h"
 #include "Layout.h"
+#include "SmoothScroll.h"
+#include "HudIcons.h"
+#include "Squircle.h"
+#include "IslandDialogs.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -20,7 +24,6 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGuiApplication>
-#include <QGraphicsOpacityEffect>
 #include <QShowEvent>
 #include <QHideEvent>
 #include <QHBoxLayout>
@@ -47,6 +50,7 @@
 #include <QStandardPaths>
 #include <QStyle>
 #include <QVBoxLayout>
+#include <QTimer>
 #include <QWindow>
 
 #include <algorithm>
@@ -56,7 +60,7 @@ class PresetPreview final : public QWidget {
 public:
     PresetPreview() {
         setObjectName("presetPreview");
-        setMinimumHeight(180);
+        setMinimumHeight(196);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     }
 
@@ -67,8 +71,8 @@ public:
         update();
     }
 
-    QSize sizeHint() const override { return {360, 180}; }
-    QSize minimumSizeHint() const override { return {0, 180}; }
+    QSize sizeHint() const override { return {360, 196}; }
+    QSize minimumSizeHint() const override { return {0, 196}; }
 
 protected:
     void paintEvent(QPaintEvent*) override {
@@ -78,72 +82,130 @@ protected:
         painter.setRenderHint(QPainter::TextAntialiasing);
         const double panelWidth = config_["width"].toDouble();
         const double panelHeight = config_["height"].toDouble();
-        const double scale = std::min({1.0, std::max(1, width() - 12) / panelWidth, (height() - 12) / panelHeight});
+        const double scale = std::min({1.0, std::max(1, width() - 24) / panelWidth, (height() - 24) / panelHeight});
         painter.translate((width() - panelWidth * scale) / 2, (height() - panelHeight * scale) / 2);
         painter.scale(scale, scale);
+        const QRectF card(0, 0, panelWidth, panelHeight);
+        const double radius = config_["radius"].toDouble();
+        const QPainterPath shape = Squircle::path(card, radius);
+        // Same material as the island: soft drop, gradient glass, top sheen and hairline.
+        const double ratio = devicePixelRatioF() * scale;
+        const int blur = qRound(10 * devicePixelRatioF());
+        const QImage shadow = Squircle::shadow((card.size() * ratio).toSize(), radius * ratio, blur);
+        const double spread = blur * 2 / ratio;
+        painter.save();
+        painter.setOpacity(0.5);
+        painter.drawImage(card.adjusted(-spread, -spread + 6 / scale, spread, spread + 6 / scale), shadow);
+        painter.restore();
         QLinearGradient surface(0, 0, panelWidth, panelHeight);
         surface.setColorAt(0, QColor(config_["background"].toString()));
         surface.setColorAt(1, QColor(config_[config_["gradient_enabled"].toBool() ? "gradient_color" : "background"].toString()));
-        painter.setBrush(surface);
-        QColor border(config_["border_color"].toString());
-        border.setAlphaF(config_["border_opacity"].toDouble());
-        const double borderWidth = config_["border_width"].toDouble();
-        painter.setPen(borderWidth > 0 ? QPen(border, borderWidth) : QPen(Qt::NoPen));
-        const double radius = config_["radius"].toDouble();
-        painter.drawRoundedRect(QRectF(0, 0, panelWidth, panelHeight), radius, radius);
-        const auto elements = Layout::elements(config_);
+        painter.fillPath(shape, surface);
         const QColor accent(config_["accent_color"].toString());
         const QColor primary(config_["text_color"].toString());
         const QColor secondary(config_["secondary_color"].toString());
+        const bool light = QColor(config_["background"].toString()).lightnessF() > 0.6;
+        const double borderWidth = config_["border_width"].toDouble();
+        if (config_["surface_highlight"].toBool(true) && borderWidth <= 0) {
+            painter.save();
+            painter.setClipPath(shape);
+            QLinearGradient sheen(card.topLeft(), QPointF(0, panelHeight * 0.4));
+            sheen.setColorAt(0, QColor(255, 255, 255, light ? 40 : 15));
+            sheen.setColorAt(1, QColor(255, 255, 255, 0));
+            painter.fillRect(card, sheen);
+            painter.restore();
+            painter.setPen(QPen(light ? QColor(0, 0, 0, 24) : QColor(255, 255, 255, 30), 1 / scale));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(Squircle::path(card.adjusted(0.5, 0.5, -0.5, -0.5), radius - 0.5));
+        }
+        if (borderWidth > 0) {
+            QColor border(config_["border_color"].toString());
+            border.setAlphaF(config_["border_opacity"].toDouble());
+            painter.setPen(QPen(border, borderWidth));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(Squircle::path(card.adjusted(borderWidth / 2, borderWidth / 2, -borderWidth / 2, -borderWidth / 2),
+                                            std::max(0.0, radius - borderWidth / 2)));
+        }
+        const auto elements = Layout::elements(config_);
         for (auto it = elements.constBegin(); it != elements.constEnd(); ++it) {
             const QRectF rect = it.value();
             painter.save();
-            painter.setClipRect(rect);
             if (it.key() == "cover") {
+                const QPainterPath art = Squircle::path(rect, std::min(14.0, radius / 2));
+                painter.setClipPath(art);
                 QLinearGradient artwork(rect.topLeft(), rect.bottomRight());
-                artwork.setColorAt(0, accent.darker(180));
-                artwork.setColorAt(1, accent.lighter(120));
+                artwork.setColorAt(0, accent.darker(190));
+                artwork.setColorAt(1, accent.lighter(115));
+                painter.fillRect(rect, artwork);
                 painter.setPen(Qt::NoPen);
-                painter.setBrush(artwork);
-                painter.drawRoundedRect(rect, 10, 10);
-                painter.setBrush(QColor(255, 255, 255, 65));
-                painter.drawEllipse(rect.adjusted(rect.width() * 0.22, rect.height() * 0.22,
-                    -rect.width() * 0.22, -rect.height() * 0.22));
+                painter.setBrush(QColor(255, 255, 255, 70));
+                painter.drawEllipse(QPointF(rect.left() + rect.width() * 0.62, rect.top() + rect.height() * 0.38),
+                                    rect.width() * 0.22, rect.width() * 0.22);
+                painter.setBrush(QColor(0, 0, 0, 40));
+                painter.drawRect(QRectF(rect.left(), rect.top() + rect.height() * 0.68, rect.width(), rect.height() * 0.32));
             } else if (it.key() == "progress" || it.key() == "volume") {
-                const double thickness = it.key() == "progress" ? config_["progress_height"].toDouble() : 3;
-                const QRectF track(rect.x(), rect.center().y() - thickness / 2, rect.width(), thickness);
+                const bool progress = it.key() == "progress";
+                const double thickness = progress ? config_["progress_height"].toDouble() : 3;
+                const double left = progress ? rect.x() : rect.x() + 31;
+                const QRectF track(left, rect.center().y() - thickness / 2, rect.right() - left - (progress ? 0 : 3), thickness);
                 painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(secondary.red(), secondary.green(), secondary.blue(), 55));
+                painter.setBrush(QColor(secondary.red(), secondary.green(), secondary.blue(), 52));
                 painter.drawRoundedRect(track, thickness / 2, thickness / 2);
-                painter.setBrush(it.key() == "progress" ? QColor(config_["progress_color"].toString()) : accent);
-                painter.drawRoundedRect(QRectF(track.topLeft(), QSizeF(track.width() * 0.42, track.height())), thickness / 2, thickness / 2);
+                painter.setBrush(progress ? QColor(config_["progress_color"].toString()) : QColor(config_["icon_color"].toString()));
+                painter.drawRoundedRect(QRectF(track.topLeft(), QSizeF(track.width() * (progress ? 0.38 : 0.55), track.height())),
+                                        thickness / 2, thickness / 2);
+                if (!progress)
+                    HudIcons::volumeIcon(painter, QRectF(rect.x(), rect.y(), 24, rect.height()), QColor(config_["icon_color"].toString()),
+                                         std::min(20.0, config_["icon_size"].toDouble()), 0.55);
             } else if (it.key() == "previous" || it.key() == "play" || it.key() == "next") {
-                const QPointF center = rect.center();
-                const double direction = it.key() == "previous" ? -1.0 : 1.0;
-                QPainterPath triangle;
-                triangle.moveTo(center + QPointF(-4 * direction, -6));
-                triangle.lineTo(center + QPointF(6 * direction, 0));
-                triangle.lineTo(center + QPointF(-4 * direction, 6));
-                triangle.closeSubpath();
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(config_["icon_color"].toString()));
-                painter.drawPath(triangle);
-                if (it.key() != "play")
-                    painter.drawRect(QRectF(center.x() + (direction > 0 ? 7 : -9), center.y() - 6, 2, 12));
+                const QColor icon(config_["icon_color"].toString());
+                if (it.key() == "play") {
+                    QColor halo = accent;
+                    halo.setAlphaF(0.18f);
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(halo);
+                    painter.drawEllipse(rect.center(), rect.height() / 2, rect.height() / 2);
+                    HudIcons::playPauseIcon(painter, rect.center(), config_["icon_size"].toDouble(), icon, 1);
+                } else {
+                    HudIcons::skipIcon(painter, rect.center(), config_["icon_size"].toDouble(), icon, it.key() == "next");
+                }
             } else {
+                painter.setClipRect(rect);
+                QFont font(config_["font_family"].toString());
+                const int size = config_["font_size"].toInt();
+                font.setPixelSize(it.key() == "source" ? std::max(8, size - 3) : it.key() == "title" ? size : std::max(8, size - 1));
+                font.setWeight(it.key() == "title" ? static_cast<QFont::Weight>(std::min(900, std::max(700, config_["font_weight"].toInt() + 100)))
+                                                   : static_cast<QFont::Weight>(config_["font_weight"].toInt()));
+                painter.setFont(font);
+                painter.setPen(it.key() == "title" ? primary : secondary);
+                if (it.key() == "time") {
+                    font.setPixelSize(std::max(9, size - 3));
+                    painter.setFont(font);
+                    painter.drawText(rect, Qt::AlignVCenter | Qt::AlignLeft, QStringLiteral("1:24"));
+                    painter.drawText(rect, Qt::AlignVCenter | Qt::AlignRight, QStringLiteral("3:32"));
+                    painter.restore();
+                    continue;
+                }
                 QString text;
                 if (it.key() == "title") text = QStringLiteral("Музыка рядом");
                 else if (it.key() == "artist") text = QStringLiteral("Любимый исполнитель");
                 else if (it.key() == "album") text = QStringLiteral("Новый альбом");
                 else if (it.key() == "source") text = QStringLiteral("Плеер");
-                else if (it.key() == "time") text = "1:24 / 3:32";
-                QFont font(config_["font_family"].toString());
-                font.setPixelSize(it.key() == "time" || it.key() == "source" ? 11 : config_["font_size"].toInt());
-                font.setWeight(it.key() == "title" ? static_cast<QFont::Weight>(config_["font_weight"].toInt()) : QFont::Normal);
-                painter.setFont(font);
-                painter.setPen(it.key() == "title" ? primary : secondary);
-                painter.drawText(rect, Qt::AlignVCenter | Qt::AlignLeft,
-                    QFontMetrics(font).elidedText(text, Qt::ElideRight, qRound(rect.width())));
+                QRectF area = rect;
+                if (it.key() == "source") {
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(accent);
+                    const double unit = std::max(2.0, font.pixelSize() / 5.5);
+                    const double heights[] = {0.55, 1.0, 0.75};
+                    for (int index = 0; index < 3; ++index) {
+                        const double h = font.pixelSize() * 0.9 * heights[index];
+                        painter.drawRoundedRect(QRectF(rect.left() + index * unit * 1.75, rect.center().y() - h / 2, unit, h), unit / 2, unit / 2);
+                    }
+                    area.adjust(unit * 1.75 * 2 + unit + 6, 0, 0, 0);
+                    painter.setPen(secondary);
+                }
+                painter.drawText(area, Qt::AlignVCenter | Qt::AlignLeft,
+                    QFontMetrics(font).elidedText(text, Qt::ElideRight, qRound(area.width())));
             }
             painter.restore();
         }
@@ -153,6 +215,36 @@ private:
     QJsonObject config_;
 };
 
+}
+
+// Cross-fades two snapshots of the content column. Painting pixmaps keeps the
+// transition at display rate, unlike an opacity effect re-rendering every widget.
+class PageTransition final : public QWidget {
+public:
+    explicit PageTransition(QWidget* parent) : QWidget(parent) {
+        setObjectName("pageTransition");
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        hide();
+    }
+
+    QPixmap outgoing;
+    QPixmap incoming;
+    double progress = 1;
+
+protected:
+    void paintEvent(QPaintEvent*) override {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        const double out = std::clamp(progress / 0.55, 0.0, 1.0);
+        painter.setOpacity(1 - out);
+        painter.drawPixmap(QPointF(0, -8 * out), outgoing);
+        const double in = std::clamp((progress - 0.12) / 0.88, 0.0, 1.0);
+        painter.setOpacity(in);
+        painter.drawPixmap(QPointF(0, 14 * (1 - in)), incoming);
+    }
+};
+
+namespace {
 class StatusLabel final : public QLabel {
 public:
     StatusLabel() {
@@ -419,6 +511,7 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     navigation_->setFrameShape(QFrame::NoFrame);
     navigation_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     navigation_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    SmoothScroll::install(navigation_);
     navigation_->setSpacing(4);
     navigation_->setIconSize(QSize(20, 20));
     const QStringList titles = {
@@ -446,11 +539,10 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
     contentLayout->addWidget(heading_);
     pages_ = new QStackedWidget;
     pages_->setObjectName("settingsPages");
-    pageOpacity_ = new QGraphicsOpacityEffect(pages_);
-    pageOpacity_->setOpacity(1.0);
-    pages_->setGraphicsEffect(pageOpacity_);
     contentLayout->addWidget(pages_, 1);
     bodyLayout->addWidget(content, 1);
+    content_ = content;
+    transition_ = new PageTransition(body);
 
     auto* footer = new QFrame;
     footer->setObjectName("footer");
@@ -481,15 +573,24 @@ SettingsWindow::SettingsWindow(ConfigStore* store, QWidget* parent)
         button->setProperty("mouseFocus", true);
         button->installEventFilter(this);
     }
+    // Scrolling the page must never change a value just because a control passed under
+    // the pointer. Controls react to the wheel only after they were deliberately focused.
+    for (auto* widget : pages_->findChildren<QWidget*>()) {
+        if (qobject_cast<QAbstractSpinBox*>(widget) || qobject_cast<QComboBox*>(widget) || qobject_cast<QAbstractSlider*>(widget)) {
+            widget->setFocusPolicy(Qt::StrongFocus);
+            widget->installEventFilter(this);
+        }
+    }
     // AlignTop caps wrapped layouts to sizeHint(); a stretch preserves their full height-for-width.
     for (auto* scroll : pages_->findChildren<QScrollArea*>())
         qobject_cast<QVBoxLayout*>(scroll->widget()->layout())->addStretch();
     connect(navigation_, &QListWidget::currentRowChanged, this, [this, titles](int index) {
         if (index < 0 || index >= titles.size())
             return;
+        const bool animated = beginPageAnimation();
         heading_->setText(titles[index]);
         pages_->setCurrentIndex(index);
-        animatePage();
+        if (animated) animatePage();
     });
     connect(store_, &ConfigStore::configChanged, this, [this] { refresh(); });
     connect(qApp, &QGuiApplication::screenAdded, this, [this] { refresh(); });
@@ -514,6 +615,7 @@ QVBoxLayout* SettingsWindow::addPage(const QString& title, const QString& text)
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setWidget(page);
     scroll->setAccessibleName(title);
+    SmoothScroll::install(scroll);
     pages_->addWidget(scroll);
     return layout;
 }
@@ -577,10 +679,33 @@ void SettingsWindow::addColor(QFormLayout* form, const QString& label, const QSt
     button->setMinimumWidth(156);
     button->setAccessibleName(label);
     controls_.insert(key, button);
-    connect(button, &QPushButton::clicked, this, [this, key, label] {
-        const QColor color = QColorDialog::getColor(QColor(store_->config().value(key).toString()), this, label);
-        if (color.isValid())
-            put(key, color.name().toUpper());
+    connect(button, &QPushButton::clicked, this, [this, key, label, button] {
+        const QString original = store_->config().value(key).toString();
+        ColorPickerDialog picker(QColor(original), this, label);
+        const QRect area = button->screen() ? button->screen()->availableGeometry() : QRect();
+        QPoint anchor = button->mapToGlobal(QPoint(0, button->height() + 2)) - QPoint(18, 14);
+        if (area.isValid()) {
+            if (anchor.y() + picker.height() > area.bottom())
+                anchor.setY(button->mapToGlobal(QPoint()).y() - picker.height() + 14);
+            anchor = QPoint(std::clamp(anchor.x(), area.left(), std::max(area.left(), area.right() - picker.width())),
+                            std::clamp(anchor.y(), area.top(), std::max(area.top(), area.bottom() - picker.height())));
+        }
+        picker.move(anchor);
+        // Preview live on the island while dragging, at a calm cadence, and revert on cancel.
+        QTimer live;
+        live.setSingleShot(true);
+        live.setInterval(45);
+        QColor pending;
+        connect(&picker, &ColorPickerDialog::currentColorChanged, &live, [&live, &pending](const QColor& color) {
+            pending = color;
+            if (!live.isActive()) live.start();
+        });
+        connect(&live, &QTimer::timeout, &live, [this, key, &pending] {
+            if (pending.isValid()) put(key, pending.name().toUpper());
+        });
+        const bool accepted = picker.exec() == QDialog::Accepted;
+        live.stop();
+        put(key, accepted ? picker.currentColor().name().toUpper() : original);
     });
     form->addRow(label, button);
 }
@@ -660,6 +785,10 @@ void SettingsWindow::buildAppearance()
     addToggle(surface, QStringLiteral("Фон из обложки"), "artwork_background");
     addNumber(surface, QStringLiteral("Выраженность обложки"), "artwork_background_strength", {}, true);
     surface->addRow(description(QStringLiteral("Цвета сильно размытой обложки окрашивают фон островка. Если обложки нет, используются выбранные ниже цвета.")));
+    addToggle(surface, QStringLiteral("Акцент из обложки"), "artwork_accent");
+    surface->addRow(description(QStringLiteral("Прогресс, эквалайзер и кнопка воспроизведения берут самый яркий оттенок обложки и подстраивают его под читаемость. Без обложки используется ваш акцент.")));
+    addToggle(surface, QStringLiteral("Стеклянный блик"), "surface_highlight");
+    surface->addRow(description(QStringLiteral("Тонкая светлая кромка и мягкий блик сверху придают глубину. При включённом контуре блик не рисуется.")));
     addColor(surface, QStringLiteral("Основной фон"), "background");
     addToggle(surface, QStringLiteral("Градиент"), "gradient_enabled");
     addColor(surface, QStringLiteral("Второй цвет градиента"), "gradient_color");
@@ -789,7 +918,7 @@ void SettingsWindow::buildAnimations()
     auto* page = addPage(QStringLiteral("Анимации"), QStringLiteral("Настройте движение островка. Каждый эффект можно отключить отдельно."));
     auto* timing = addGroup(page, QStringLiteral("Плавность"));
     addNumber(timing, QStringLiteral("Длительность переходов"), "animation_duration", QStringLiteral(" мс"));
-    timing->addRow(description(QStringLiteral("Эта длительность применяется и к сворачиванию островка у верхнего края.")));
+    timing->addRow(description(QStringLiteral("Задаёт темп всех движений островка. Сворачивание и наведение используют физику пружин: прерванное движение плавно разворачивается без рывков.")));
     auto* panel = addGroup(page, QStringLiteral("Панель настроек"));
     addToggle(panel, QStringLiteral("Плавные переходы"), "settings_animations");
     addNumber(panel, QStringLiteral("Длительность"), "settings_animation_duration", QStringLiteral(" мс"));
@@ -799,8 +928,10 @@ void SettingsWindow::buildAnimations()
         {"appear", QStringLiteral("Появление HUD")}, {"disappear", QStringLiteral("Исчезновение HUD")},
         {"cover", QStringLiteral("Смена обложки")}, {"title", QStringLiteral("Смена названия трека")},
         {"progress", QStringLiteral("Плавный прогресс")}, {"hover", QStringLiteral("Подсветка при наведении")},
-        {"play", QStringLiteral("Нажатие Play / Pause")},
-        {"dock", QStringLiteral("Сворачивание и раскрытие у края")}
+        {"play", QStringLiteral("Морфинг Play / Pause")},
+        {"dock", QStringLiteral("Сворачивание и раскрытие у края")},
+        {"equalizer", QStringLiteral("Живой эквалайзер у источника")},
+        {"marquee", QStringLiteral("Бегущая строка длинных названий")}
     };
     for (const auto& effect : names)
         addToggle(effects, effect.second, "animations/" + effect.first);
@@ -841,8 +972,8 @@ void SettingsWindow::buildProfiles()
     connect(save, &QPushButton::clicked, this, &SettingsWindow::saveProfile);
     connect(remove, &QPushButton::clicked, this, [this] {
         const QString name = profileChoice_->currentText();
-        if (name.isEmpty() || QMessageBox::question(this, QStringLiteral("Удаление профиля"),
-            QStringLiteral("Удалить профиль «%1»?").arg(name)) != QMessageBox::Yes)
+        if (name.isEmpty() || IslandDialogs::question(this, QStringLiteral("Удаление профиля"),
+            QStringLiteral("Удалить профиль «%1»? Это действие нельзя отменить.").arg(name)) != QMessageBox::Yes)
             return;
         QString error;
         if (!store_->deleteProfile(name, &error))
@@ -867,7 +998,8 @@ void SettingsWindow::buildProfiles()
             reportError(QStringLiteral("Встроенные темы нельзя удалить"));
             return;
         }
-        if (QMessageBox::question(this, QStringLiteral("Удаление темы"), QStringLiteral("Удалить тему «%1»?").arg(name)) != QMessageBox::Yes)
+        if (IslandDialogs::question(this, QStringLiteral("Удаление темы"),
+                QStringLiteral("Удалить тему «%1»? Это действие нельзя отменить.").arg(name)) != QMessageBox::Yes)
             return;
         QString error;
         if (!store_->deleteTheme(name, &error))
@@ -910,7 +1042,11 @@ void SettingsWindow::buildSystem()
     auto* idle = addGroup(page, QStringLiteral("Сворачивание у верхнего края"));
     addToggle(idle, QStringLiteral("Сворачивать при бездействии"), "idle_collapse");
     addNumber(idle, QStringLiteral("Сворачивать через"), "idle_collapse_seconds", QStringLiteral(" сек"));
-    idle->addRow(description(QStringLiteral("При бездействии островок уменьшается и уходит за верхний край выбранного монитора. На экране остаётся узкая полоска, которая раскрывает HUD при наведении мыши.")));
+    idle->addRow(description(QStringLiteral("При бездействии островок уменьшается и уходит за верхний край выбранного монитора. На экране остаётся узкая полоска, которая раскрывает HUD при наведении мыши. Пока курсор над островком, он не сворачивается.")));
+    addNumber(idle, QStringLiteral("Задержка раскрытия"), "dock_hover_delay", QStringLiteral(" мс"));
+    idle->addRow(description(QStringLiteral("Полоска откликается сразу, а раскрывается, только если курсор задержался на ней. Так случайный пролёт мыши мимо края не открывает островок.")));
+    addToggle(idle, QStringLiteral("Раскрытие в играх и видео"), "dock_hover_fullscreen");
+    idle->addRow(description(QStringLiteral("В играх и полноэкранном видео полоска по умолчанию пропускает мышь насквозь и не раскрывается от наведения. Скрытый курсор никогда не открывает островок. Горячая клавиша работает всегда.")));
     auto* behavior = addGroup(page, QStringLiteral("Поведение островка"));
     auto* hotkey = new QKeySequenceEdit;
     hotkey->setAttribute(Qt::WA_StyledBackground);
@@ -1060,6 +1196,11 @@ bool SettingsWindow::put(const QString& key, const QJsonValue& value)
     }
     if (key == "source_id")
         emit sourceChanged(value.toString());
+    static const QStringList quiet = {"source_id", "hotkey", "startup", "check_updates", "monitor_positions",
+                                      "idle_collapse", "idle_collapse_seconds", "auto_hide_seconds", "dock_hover_delay",
+                                      "dock_hover_fullscreen", "click_through"};
+    if (!key.startsWith(QStringLiteral("settings_")) && !key.startsWith(QStringLiteral("compact_")) && !quiet.contains(key))
+        emit appearanceEdited();
     return true;
 }
 
@@ -1152,6 +1293,8 @@ void SettingsWindow::refresh()
     controls_.value("gradient_color")->setEnabled(config.value("gradient_enabled").toBool());
     controls_.value("artwork_background_strength")->setEnabled(config.value("artwork_background").toBool());
     controls_.value("idle_collapse_seconds")->setEnabled(config.value("idle_collapse").toBool());
+    controls_.value("dock_hover_delay")->setEnabled(config.value("idle_collapse").toBool());
+    controls_.value("dock_hover_fullscreen")->setEnabled(config.value("idle_collapse").toBool());
     const bool borderEnabled = config.value("border_width").toDouble() > 0;
     controls_.value("border_color")->setEnabled(borderEnabled);
     controls_.value("border_opacity")->setEnabled(borderEnabled);
@@ -1254,11 +1397,11 @@ void SettingsWindow::refreshCollections()
 void SettingsWindow::saveProfile()
 {
     bool accepted = false;
-    const QString name = QInputDialog::getText(this, QStringLiteral("Сохранить профиль"),
-        QStringLiteral("Название профиля"), QLineEdit::Normal, store_->activeProfile(), &accepted).trimmed();
+    const QString name = IslandDialogs::getText(this, QStringLiteral("Сохранить профиль"),
+        QStringLiteral("Название профиля"), store_->activeProfile(), &accepted).trimmed();
     if (!accepted || name.isEmpty())
         return;
-    if (store_->profiles().contains(name) && QMessageBox::question(this, QStringLiteral("Заменить профиль"),
+    if (store_->profiles().contains(name) && IslandDialogs::question(this, QStringLiteral("Заменить профиль"),
         QStringLiteral("Перезаписать профиль «%1» текущими настройками?").arg(name)) != QMessageBox::Yes)
         return;
     QString error;
@@ -1269,11 +1412,11 @@ void SettingsWindow::saveProfile()
 void SettingsWindow::saveTheme()
 {
     bool accepted = false;
-    const QString name = QInputDialog::getText(this, QStringLiteral("Сохранить тему"),
-        QStringLiteral("Название темы"), QLineEdit::Normal, {}, &accepted).trimmed();
+    const QString name = IslandDialogs::getText(this, QStringLiteral("Сохранить тему"),
+        QStringLiteral("Название темы"), {}, &accepted).trimmed();
     if (!accepted || name.isEmpty())
         return;
-    if (store_->themes().contains(name) && QMessageBox::question(this, QStringLiteral("Заменить тему"),
+    if (store_->themes().contains(name) && IslandDialogs::question(this, QStringLiteral("Заменить тему"),
         QStringLiteral("Перезаписать тему «%1» текущим оформлением?").arg(name)) != QMessageBox::Yes)
         return;
     QString error;
@@ -1290,7 +1433,7 @@ void SettingsWindow::applyTheme(const QString& name)
 
 void SettingsWindow::reportError(const QString& error)
 {
-    QMessageBox::warning(this, QStringLiteral("Не удалось применить настройки"), error);
+    IslandDialogs::warning(this, QStringLiteral("Не удалось применить настройки"), error);
 }
 
 void SettingsWindow::updateStyle()
@@ -1328,6 +1471,8 @@ void SettingsWindow::updateStyle()
     for (auto* choice : findChildren<SettingsFontChoice*>())
         choice->setColors(QColor(accent), QColor(hover), foreground);
     qobject_cast<SettingsNavigation*>(navigation_)->setColors(QColor(accent), QColor(selected), foreground);
+    for (auto* area : findChildren<QAbstractScrollArea*>())
+        SmoothScroll::setColor(area, foreground);
     const QString sheet = QStringLiteral(R"(
         QWidget { color: %1; font-size: %2pt; font-weight: 600; font-family: "%13"; }
         QWidget#SettingsWindow { background: transparent; }
@@ -1413,29 +1558,55 @@ void SettingsWindow::updateMotion()
     motion_.setRefreshRate(refreshRate);
     for (auto* toggle : findChildren<SettingsToggle*>())
         toggle->setMotion(enabled, duration, refreshRate);
+    for (auto* slider : findChildren<SettingsSlider*>())
+        slider->setMotion(enabled);
     for (auto* choice : findChildren<SettingsChoice*>())
         choice->setMotion(enabled, duration, refreshRate);
     for (auto* choice : findChildren<SettingsFontChoice*>())
         choice->setMotion(enabled, duration, refreshRate);
     qobject_cast<SettingsNavigation*>(navigation_)->setMotion(enabled, duration, refreshRate);
+    for (auto* area : findChildren<QAbstractScrollArea*>())
+        SmoothScroll::setMotion(area, enabled);
     if (!enabled) finishPageAnimation();
+}
+
+bool SettingsWindow::beginPageAnimation()
+{
+    finishPageAnimation();
+    if (!transition_ || !content_ || !isVisible() || !store_->config().value("settings_animations").toBool())
+        return false;
+    transition_->outgoing = content_->grab();
+    return !transition_->outgoing.isNull();
 }
 
 void SettingsWindow::animatePage()
 {
-    if (!pageOpacity_) return;
-    finishPageAnimation();
-    if (!isVisible() || !store_->config().value("settings_animations").toBool()) return;
-    const auto duration = std::chrono::milliseconds(store_->config().value("settings_animation_duration").toInt());
-    motion_.start("page", 0.15, 1.0, duration, [this](double opacity) {
-        pageOpacity_->setOpacity(opacity);
-    });
+    if (!transition_ || transition_->outgoing.isNull()) return;
+    transition_->incoming = content_->grab();
+    transition_->setGeometry(content_->geometry());
+    transition_->progress = 0;
+    transition_->show();
+    transition_->raise();
+    content_->setUpdatesEnabled(false);
+    const auto duration = std::chrono::milliseconds(qRound(store_->config().value("settings_animation_duration").toInt() * 1.4));
+    QEasingCurve easing(QEasingCurve::BezierSpline);
+    easing.addCubicBezierSegment(QPointF(0.05, 0.7), QPointF(0.1, 1.0), QPointF(1, 1));
+    motion_.start("page", 0, 1, duration, easing, [this](double progress) {
+        transition_->progress = progress;
+        transition_->update();
+    }, [this] { finishPageAnimation(); });
 }
 
 void SettingsWindow::finishPageAnimation()
 {
     motion_.stop("page");
-    if (pageOpacity_) pageOpacity_->setOpacity(1.0);
+    if (!transition_) return;
+    const bool active = transition_->isVisible();
+    transition_->hide();
+    transition_->outgoing = {};
+    transition_->incoming = {};
+    if (content_ && !content_->updatesEnabled()) content_->setUpdatesEnabled(true);
+    if (active && content_) content_->update();
 }
 
 void SettingsWindow::showEvent(QShowEvent* event)
@@ -1451,7 +1622,6 @@ void SettingsWindow::showEvent(QShowEvent* event)
     if (windowHandle())
         screenConnection_ = connect(windowHandle(), &QWindow::screenChanged, this, bindScreen);
     bindScreen(screen());
-    animatePage();
 }
 
 void SettingsWindow::hideEvent(QHideEvent* event)
@@ -1490,6 +1660,16 @@ void SettingsWindow::resizeEvent(QResizeEvent* event)
 
 bool SettingsWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (event->type() == QEvent::Wheel) {
+        auto* control = qobject_cast<QWidget*>(watched);
+        const bool guarded = qobject_cast<QAbstractSpinBox*>(watched) || qobject_cast<QComboBox*>(watched)
+            || qobject_cast<QAbstractSlider*>(watched);
+        if (control && guarded && !control->hasFocus()) {
+            // Ignored wheel events continue to the parent scroll area.
+            event->ignore();
+            return true;
+        }
+    }
     if (auto* button = qobject_cast<QPushButton*>(watched)) {
         bool mouseFocus = button->property("mouseFocus").toBool();
         if (event->type() == QEvent::FocusIn) {

@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QColorDialog>
+#include "IslandDialogs.h"
 #include <QDoubleSpinBox>
 #include <QDesktopServices>
 #include <QFile>
@@ -88,7 +89,7 @@ QString runDialogs(const std::function<void()>& action, const QList<DialogStep>&
         } else if (step.kind == DialogStep::Question) {
             matched = qobject_cast<QMessageBox*>(dialog) != nullptr;
         } else if (step.kind == DialogStep::Color) {
-            if (auto* color = qobject_cast<QColorDialog*>(dialog)) {
+            if (auto* color = qobject_cast<ColorPickerDialog*>(dialog)) {
                 matched = true;
                 color->setCurrentColor(QColor(step.text));
             }
@@ -191,7 +192,7 @@ private slots:
     void everyNumberUsesItsDeclaredRangeAndPersists()
     {
         const auto numbers = window_->findChildren<SettingsSlider*>();
-        QCOMPARE(numbers.size(), 24);
+        QCOMPARE(numbers.size(), 25);
         for (auto* control : numbers) {
             const QString key = control->objectName();
             const auto range = ConfigStore::numericRange(key);
@@ -213,7 +214,7 @@ private slots:
     void everyToggleRoundTripsWithMouseAndKeyboard()
     {
         const auto toggles = window_->findChildren<SettingsToggle*>();
-        QCOMPARE(toggles.size(), 29);
+        QCOMPARE(toggles.size(), 34);
         for (auto* toggle : toggles) {
             const bool original = toggle->isChecked();
             QTest::mouseClick(toggle, Qt::LeftButton, Qt::NoModifier, toggle->rect().center());
