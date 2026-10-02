@@ -11,6 +11,7 @@
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QInputDialog>
+#include <QLineEdit>
 #include <QJsonArray>
 #include <QLabel>
 #include <QMessageBox>
@@ -96,6 +97,10 @@ QString runDialogs(const std::function<void()>& action, const QList<DialogStep>&
         } else if (auto* file = qobject_cast<QFileDialog*>(dialog)) {
             matched = true;
             file->selectFile(step.text);
+            // selectFile() leaves an already focused file-name field untouched, and focus
+            // arrives asynchronously; type the path the way a user would.
+            if (auto* name = file->findChild<QLineEdit*>(QStringLiteral("fileNameEdit")))
+                name->setText(step.text);
         }
         if (!matched) {
             error = QStringLiteral("Wrong dialog at step %1: %2").arg(next).arg(dialog->metaObject()->className());
