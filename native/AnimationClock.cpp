@@ -1,5 +1,10 @@
 #include "AnimationClock.h"
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <dwmapi.h>
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -11,6 +16,10 @@ constexpr double MaximumRefreshRate = 1000;
 constexpr qint64 NanosecondsPerSecond = 1'000'000'000;
 constexpr double SpringRelativePrecision = 0.0008;
 constexpr double SpringMaximumPeriods = 12;
+// Frames start just after the compositor's vertical blank, so each update is ready
+// well before the next composition instead of racing it at a random phase.
+constexpr qint64 VBlankOffset = 1'000'000;
+constexpr qint64 VBlankResample = 500'000'000;
 }
 
 AnimationClock::AnimationClock(QObject* parent) : QObject(parent) {
@@ -101,6 +110,19 @@ double AnimationClock::target(const QString& name, double fallback) const {
     return current == tracks_.cend() ? fallback : current->to;
 }
 
+void AnimationClock::requestFrame(const QString& name, CompletionCallback callback) {
+    if (!callback) return;
+    const auto current = tracks_.find(name);
+    if (current != tracks_.end() && current->kind == Kind::Frame) {
+        current->finished = std::move(callback);
+        return;
+    }
+    stop(name);
+    tracks_.insert(name, Track{++nextId_, Kind::Frame, elapsed_.nsecsElapsed(), 0, 0, 0, 0, 0, {}, {}, {},
+        std::move(callback), 0, 0});
+    if (!timer_.isActive()) schedule();
+}
+
 void AnimationClock::stop(const QString& name) {
     tracks_.remove(name);
     if (tracks_.isEmpty()) {
@@ -163,6 +185,11 @@ void AnimationClock::tick() {
         auto current = tracks_.find(name);
         if (current == tracks_.end()) continue;
         const Track track = current.value();
+        if (track.kind == Kind::Frame) {
+            tracks_.erase(current);
+            if (track.finished) track.finished();
+            continue;
+        }
         bool done = false;
         double value = track.to;
         if (track.kind == Kind::Eased) {
@@ -204,7 +231,39 @@ void AnimationClock::schedule() {
     const qint64 period = frameInterval_.count();
     if (nextFrame_ == 0) nextFrame_ = now + period;
     else if (nextFrame_ <= now) nextFrame_ += ((now - nextFrame_) / period + 1) * period;
+    nextFrame_ = alignToVBlank(nextFrame_, now);
     // Absolute deadlines compensate for Windows timer rounding; late frames are skipped.
     timer_.setInterval(std::chrono::nanoseconds(nextFrame_ - now));
     timer_.start();
+}
+
+qint64 AnimationClock::alignToVBlank(qint64 deadline, qint64 now) {
+#ifdef Q_OS_WIN
+    if (vblankPeriod_ == 0 || now - vblankSampled_ > VBlankResample) {
+        DWM_TIMING_INFO timing{};
+        timing.cbSize = sizeof(timing);
+        LARGE_INTEGER counter{}, frequency{};
+        if (FAILED(DwmGetCompositionTimingInfo(nullptr, &timing)) || timing.qpcRefreshPeriod == 0
+            || !QueryPerformanceCounter(&counter) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
+            vblankPeriod_ = -1;
+            vblankSampled_ = now;
+            return deadline;
+        }
+        const double nanoseconds = 1e9 / static_cast<double>(frequency.QuadPart);
+        vblankPeriod_ = std::llround(static_cast<double>(timing.qpcRefreshPeriod) * nanoseconds);
+        vblank_ = now - std::llround(static_cast<double>(counter.QuadPart - static_cast<LONGLONG>(timing.qpcVBlank)) * nanoseconds);
+        vblankSampled_ = now;
+    }
+    const qint64 period = frameInterval_.count();
+    // Only lock to the compositor when it runs at the cadence this clock was asked for.
+    if (vblankPeriod_ <= 0 || std::abs(vblankPeriod_ - period) > period / 8) return deadline;
+    const qint64 phase = vblank_ + VBlankOffset;
+    const qint64 steps = (deadline - phase + vblankPeriod_ / 2) / vblankPeriod_;
+    qint64 aligned = phase + steps * vblankPeriod_;
+    while (aligned <= now) aligned += vblankPeriod_;
+    return aligned;
+#else
+    Q_UNUSED(now);
+    return deadline;
+#endif
 }

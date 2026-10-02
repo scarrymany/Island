@@ -22,6 +22,7 @@ constexpr double HoverThickness = 8;
 constexpr double MinimumThumb = 34;
 constexpr int IdleDelayMs = 900;
 constexpr double WheelStep = 104;
+constexpr int GlideMs = 210;
 
 class OverlayScrollBar final : public QWidget {
 public:
@@ -33,8 +34,10 @@ public:
         area->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         auto* bar = area->verticalScrollBar();
         connect(bar, &QScrollBar::rangeChanged, this, [this] { place(); });
-        connect(bar, &QScrollBar::valueChanged, this, [this] {
-            if (!gliding_) target_ = area_->verticalScrollBar()->value();
+        connect(bar, &QScrollBar::valueChanged, this, [this](int value) {
+            if (!gliding_) target_ = value;
+            // Someone else scrolled (keyboard, focus, script): continue gliding from there.
+            else if (std::abs(value - position_) > 1.5) position_ = value;
             wake();
             update();
         });
@@ -49,7 +52,7 @@ public:
     void setColor(const QColor& color) { color_ = color; update(); }
     void setMotion(bool enabled) {
         motionEnabled_ = enabled;
-        if (!enabled) { motion_.stopAll(); gliding_ = false; activity_ = 0; hover_ = underMouse() ? 1 : 0; update(); }
+        if (!enabled) { motion_.stopAll(); gliding_ = false; position_ = -1; activity_ = 0; hover_ = underMouse() ? 1 : 0; update(); }
     }
 
 protected:
@@ -168,6 +171,7 @@ private:
     void stopGlide() {
         motion_.stop(QStringLiteral("glide"));
         gliding_ = false;
+        position_ = -1;
         target_ = area_->verticalScrollBar()->value();
     }
 
@@ -175,11 +179,14 @@ private:
         auto* bar = area_->verticalScrollBar();
         target_ = std::clamp(value, static_cast<double>(bar->minimum()), static_cast<double>(bar->maximum()));
         if (!motionEnabled_ || !isVisible()) { bar->setValue(qRound(target_)); return; }
-        if (gliding_ && motion_.retarget(QStringLiteral("glide"), target_)) return;
+        // Ease out from the current position: the page moves on the very next frame and
+        // decelerates, so a wheel notch feels immediate (a spring from rest would lag).
         gliding_ = true;
-        motion_.spring(QStringLiteral("glide"), bar->value(), target_, {0.34, 1.0}, [this](double position) {
+        motion_.start(QStringLiteral("glide"), position_ >= 0 ? position_ : bar->value(), target_, std::chrono::milliseconds(GlideMs),
+                      QEasingCurve::OutCubic, [this](double position) {
+            position_ = position;
             area_->verticalScrollBar()->setValue(qRound(position));
-        }, [this] { gliding_ = false; });
+        }, [this] { gliding_ = false; position_ = -1; });
     }
 
     bool wheel(QWheelEvent* event) {
@@ -208,6 +215,7 @@ private:
     double hover_ = 0;
     double activity_ = 0;
     double target_ = 0;
+    double position_ = -1;
     double grabOffset_ = 0;
     bool dragging_ = false;
     bool gliding_ = false;

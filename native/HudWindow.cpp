@@ -16,6 +16,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPointer>
 #include <QScreen>
 #include <QWheelEvent>
 #include <QWindow>
@@ -46,14 +47,14 @@ constexpr double MarqueeRest = 1.6;
 constexpr double TextFade = 18;
 const QStringList Transport{"previous", "play", "next"};
 
-QImage blurredArtwork(const QPixmap& cover) {
+QImage blurredArtwork(const QImage& cover) {
     if (cover.isNull()) return {};
     QImage image(ArtworkSize, ArtworkSize, QImage::Format_RGB32);
     image.fill(Qt::black);
     {
         QPainter painter(&image);
         painter.setRenderHint(QPainter::SmoothPixmapTransform);
-        painter.drawPixmap(image.rect(), cover);
+        painter.drawImage(image.rect(), cover);
     }
     constexpr int samples = ArtworkBlurRadius * 2 + 1;
     for (int pass = 0; pass < ArtworkBlurPasses * 2; ++pass) {
@@ -123,9 +124,9 @@ QImage blendArtwork(const QImage& previous, const QImage& next, double progress)
 }
 
 // The most saturated hue family of the cover, used to tint progress and highlights.
-QColor vibrantColor(const QPixmap& cover) {
+QColor vibrantColor(const QImage& cover) {
     if (cover.isNull()) return {};
-    const QImage small = cover.toImage().scaled(24, 24, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
+    const QImage small = cover.scaled(24, 24, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)
         .convertToFormat(QImage::Format_RGB32);
     std::array<double, 12> weight{};
     std::array<std::array<double, 3>, 12> sum{};
@@ -189,9 +190,11 @@ double smoothstep(double edge0, double edge1, double value) {
     return t * t * (3 - 2 * t);
 }
 
+// Even deceleration: quick to respond without throwing most of the motion into the
+// first frame, so short transitions never read as a jump.
 QEasingCurve emphasized() {
     QEasingCurve curve(QEasingCurve::BezierSpline);
-    curve.addCubicBezierSegment(QPointF(0.05, 0.7), QPointF(0.1, 1.0), QPointF(1, 1));
+    curve.addCubicBezierSegment(QPointF(0.25, 0.8), QPointF(0.3, 1.0), QPointF(1, 1));
     return curve;
 }
 
@@ -257,6 +260,7 @@ HudWindow::HudWindow(const QJsonObject& config)
     setMouseTracking(true);
     setAccessibleName(QStringLiteral("SCARP ISLAND - музыкальный оверлей"));
     clock_.start();
+    artworkPool_.setMaxThreadCount(1);
     progressTimer_.setSingleShot(true);
     progressTimer_.setTimerType(Qt::PreciseTimer);
     connect(&progressTimer_, &QChronoTimer::timeout, this, [this] {
@@ -302,6 +306,8 @@ HudWindow::~HudWindow() {
     inactiveTimer_.stop();
     screenPlacementTimer_.stop();
     animations_.stopAll();
+    artworkPool_.clear();
+    artworkPool_.waitForDone();
     if (QGuiApplication::platformName() == "windows") WindowsIntegration::releaseOverlayBackdrop(winId());
 }
 
@@ -323,7 +329,8 @@ bool HudWindow::event(QEvent* event) {
     // command already sent to the player. Keep its confirmation until reply/timeout.
     if (event->type() == QEvent::WindowBlocked || event->type() == QEvent::WindowDeactivate) cancelScrub();
     const bool handled = QWidget::event(event);
-    if (event->type() == QEvent::Move || event->type() == QEvent::DevicePixelRatioChange) syncRefreshRate();
+    // A drag moves the window every frame; screen changes arrive through screenChanged.
+    if ((event->type() == QEvent::Move && !dragWindow_) || event->type() == QEvent::DevicePixelRatioChange) syncRefreshRate();
     if (event->type() == QEvent::DevicePixelRatioChange) updateNativeRegion();
     return handled;
 }
@@ -419,7 +426,7 @@ void HudWindow::resetPosition() {
 
 void HudWindow::applyConfig(const QJsonObject& config) {
     cancelSeek();
-    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
+    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); pendingDrag_.reset(); stopAnimation("drag");
     setHover({}); setToolTip({}); setCursor(Qt::ArrowCursor);
     config_ = config;
     invalidateLayout();
@@ -677,7 +684,7 @@ void HudWindow::hideEvent(QHideEvent* e) {
     hoverLevels_.clear(); pressLevels_.clear(); pressed_.clear();
     marqueeOffset_ = 0; marqueePause_ = MarqueeRest; marqueeBudget_ = 0;
     displayedArtwork_ = artwork_;
-    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
+    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); pendingDrag_.reset();
     hover_.clear(); hoverFromDock_ = false; cardHovered_ = false;
     QWidget::hideEvent(e);
 }
@@ -812,7 +819,10 @@ void HudWindow::syncFrameTimer() {
     }
     const double frame = animations_.frameInterval().count() / 1e9;
     interval = std::clamp(interval, frame, 1.0);
-    progressTimer_.setInterval(std::chrono::nanoseconds(std::llround(interval * 1e9)) + std::chrono::milliseconds(1));
+    const auto next = std::chrono::nanoseconds(std::llround(interval * 1e9)) + std::chrono::milliseconds(1);
+    // Frequent resyncs (window moves, hover) must not keep postponing the next repaint.
+    if (progressTimer_.isActive() && progressTimer_.remainingTime() <= next) return;
+    progressTimer_.setInterval(next);
     progressTimer_.start();
 }
 
@@ -955,18 +965,20 @@ void HudWindow::present(const MediaSnapshot& next) {
         }, [this] { syncTicker(); });
     }
     if (next.cover != presented_.cover) {
-        accentFrom_ = accentColor();
-        progressFrom_ = progressColor();
-        oldCover_ = cover_; cover_ = QPixmap();
-        if (!next.cover.isEmpty()) cover_.loadFromData(next.cover);
-        oldArtwork_ = displayedArtwork_;
-        artwork_ = blurredArtwork(cover_);
-        artworkAccent_ = vibrantColor(cover_);
-        animate("cover", 0, 1, [this](double a) {
-            coverAlpha_ = a;
-            displayedArtwork_ = blendArtwork(oldArtwork_, artwork_, a);
-            update();
-        });
+        const quint64 generation = ++artworkGeneration_;
+        if (config_["animations"].toObject()["cover"].toBool(true) && isVisible() && dockProgress_ < 1) {
+            // Decoding, blurring and colour analysis can take tens of milliseconds for large
+            // covers; doing it here would stall the text transition that has just started.
+            QPointer<HudWindow> self(this);
+            artworkPool_.start([self, generation, bytes = next.cover] {
+                const Artwork artwork = processArtwork(bytes);
+                QMetaObject::invokeMethod(qApp, [self, generation, artwork] {
+                    if (self && self->artworkGeneration_ == generation) self->applyArtwork(artwork);
+                }, Qt::QueuedConnection);
+            });
+        } else {
+            applyArtwork(processArtwork(next.cover));
+        }
     }
     const double playing = next.active && next.playing ? 1.0 : 0.0;
     if (playing != (presented_.active && presented_.playing ? 1.0 : 0.0) || !presentedOnce_) {
@@ -991,6 +1003,29 @@ void HudWindow::present(const MediaSnapshot& next) {
     presentedOnce_ = true;
     if (textChanged) titleWidth_ = -1;
     syncTicker();
+}
+
+HudWindow::Artwork HudWindow::processArtwork(const QByteArray& bytes) {
+    Artwork artwork;
+    if (!bytes.isEmpty()) artwork.image.loadFromData(bytes);
+    artwork.blurred = blurredArtwork(artwork.image);
+    artwork.accent = vibrantColor(artwork.image);
+    return artwork;
+}
+
+void HudWindow::applyArtwork(const Artwork& artwork) {
+    accentFrom_ = accentColor();
+    progressFrom_ = progressColor();
+    oldCover_ = cover_;
+    cover_ = artwork.image.isNull() ? QPixmap() : QPixmap::fromImage(artwork.image);
+    oldArtwork_ = displayedArtwork_;
+    artwork_ = artwork.blurred;
+    artworkAccent_ = artwork.accent;
+    animate("cover", 0, 1, [this](double a) {
+        coverAlpha_ = a;
+        displayedArtwork_ = blendArtwork(oldArtwork_, artwork_, a);
+        update();
+    });
 }
 
 QColor HudWindow::accentColor() const {
@@ -1408,7 +1443,7 @@ QString HudWindow::hitTest(const QPointF& point) const {
 void HudWindow::mousePressEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton) return;
     cancelScrub();
-    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset();
+    dragElement_.clear(); dragOrigin_.reset(); dragWindow_.reset(); pendingDrag_.reset(); stopAnimation("drag");
     if (collapsed_ || dockProgress_ > 0) { cancelRevealIntent(); hoverFromDock_ = true; reveal(); return; }
     hideTimer_.stop();
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
@@ -1461,24 +1496,35 @@ void HudWindow::mouseMoveEvent(QMouseEvent* e) {
         config_["element_positions"] = positions; config_["layout"] = "custom"; moved_ = true;
         invalidateLayout(); update();
     } else if (dragWindow_ && !config_["position_locked"].toBool(false)) {
+        // Mice report up to 1000 positions a second; move the window once per display frame.
         const QPoint destination = e->globalPosition().toPoint() - *dragWindow_;
-        const QPoint delta = destination - pos();
-        if (!delta.isNull()) {
-            expandedGeometry_.translate(delta);
-            expandedCard_.translate(delta);
-            card_.translate(delta);
-            unionFrame_.translate(delta);
-            move(destination);
-            updateNativeRegion();
+        if (destination != pos() || pendingDrag_) {
+            pendingDrag_ = destination;
             moved_ = true;
+            animations_.requestFrame(QStringLiteral("drag"), [this] { applyPendingDrag(); });
         }
     }
     else if (seekPreview_) previewSeekAt(point);
     else if (dragElement_ == "volume") volumeAt(point);
 }
 
+void HudWindow::applyPendingDrag() {
+    if (!pendingDrag_ || !dragWindow_) { pendingDrag_.reset(); return; }
+    const QPoint destination = *pendingDrag_;
+    pendingDrag_.reset();
+    const QPoint delta = destination - pos();
+    if (delta.isNull()) return;
+    expandedGeometry_.translate(delta);
+    expandedCard_.translate(delta);
+    card_.translate(delta);
+    unionFrame_.translate(delta);
+    move(destination);
+    updateNativeRegion();
+}
+
 void HudWindow::mouseReleaseEvent(QMouseEvent* e) {
     if (e->button() != Qt::LeftButton) return;
+    if (pendingDrag_) { stopAnimation("drag"); applyPendingDrag(); }
     const auto point = localPoint(e->position()); const auto hit = hitTest(point);
     if (!pressed_.isEmpty()) {
         const QString released = pressed_;

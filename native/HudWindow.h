@@ -10,6 +10,7 @@
 #include <QImage>
 #include <QMap>
 #include <QPixmap>
+#include <QThreadPool>
 #include <QTimer>
 #include <QWidget>
 #include <functional>
@@ -93,6 +94,14 @@ private:
     bool revealGestureAllowed() const;
     void setPeek(bool engaged);
     void present(const MediaSnapshot& snapshot);
+    struct Artwork {
+        QImage image;
+        QImage blurred;
+        QColor accent;
+    };
+    static Artwork processArtwork(const QByteArray& bytes);
+    void applyArtwork(const Artwork& artwork);
+    void applyPendingDrag();
     void animate(const QString& name, double from, double to, std::function<void(double)> callback,
                  std::function<void()> finished = {});
     void stopAnimation(const QString& name);
@@ -141,6 +150,7 @@ private:
     QString hover_, pressed_, dragElement_;
     std::optional<QPointF> dragOrigin_;
     std::optional<QPoint> dragWindow_;
+    std::optional<QPoint> pendingDrag_;
     std::optional<double> seekPreview_;
     std::optional<MediaSnapshot> pendingSeek_;
     QPixmap cover_, oldCover_;
@@ -155,6 +165,8 @@ private:
     QElapsedTimer clock_;
     mutable std::optional<QMap<QString, QRectF>> rects_;
     mutable double titleWidth_ = -1;
+    quint64 artworkGeneration_ = 0;
+    QThreadPool artworkPool_;
     QChronoTimer progressTimer_;
     QChronoTimer ticker_;
     QTimer hideTimer_;
