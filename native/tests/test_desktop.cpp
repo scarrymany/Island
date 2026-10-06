@@ -19,6 +19,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <future>
 
 namespace {
 constexpr int CaptureWidth = 760;
@@ -429,13 +430,25 @@ private slots:
         if (WindowsIntegration::foregroundIsFullscreen(hud.winId()))
             QSKIP("A fullscreen application is in the foreground; the strip intentionally ignores hover there");
         const QPoint strip(qRound(hud.cardGeometry().center().x()), screen->geometry().top() + VisibleHeight / 2);
+        // Ask Windows which top-level window a click there reaches: any window of this
+        // process (the overlay or its blur surface) means the click is swallowed. The query
+        // runs on another thread because HTTRANSPARENT only lets clicks through to windows
+        // of the same thread, so asking from the GUI thread would hide the problem.
         const auto hittable = [&hud](const QPoint& global) {
-            HRGN region = CreateRectRgn(0, 0, 0, 0);
-            const auto release = qScopeGuard([region] { DeleteObject(region); });
-            const HWND hwnd = reinterpret_cast<HWND>(hud.winId());
-            if (GetWindowRgn(hwnd, region) == ERROR) return true;
+            RECT frame{};
+            if (!GetWindowRect(reinterpret_cast<HWND>(hud.winId()), &frame)) return true;
             const QPointF local = QPointF(global - hud.pos()) * hud.devicePixelRatioF();
-            return PtInRegion(region, qFloor(local.x()), qFloor(local.y())) != FALSE;
+            const POINT physical{frame.left + qFloor(local.x()), frame.top + qFloor(local.y())};
+            auto owner = std::async(std::launch::async, [physical] {
+                const HWND target = GetAncestor(WindowFromPoint(physical), GA_ROOT);
+                DWORD process = 0;
+                GetWindowThreadProcessId(target, &process);
+                return target && process == GetCurrentProcessId();
+            });
+            // WindowFromPoint sends WM_NCHITTEST to our windows; keep this thread answering.
+            while (owner.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+            return owner.get();
         };
 
         // Touching the strip only peeks; leaving it must not leave the empty frame below

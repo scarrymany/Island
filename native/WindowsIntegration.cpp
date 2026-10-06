@@ -302,6 +302,7 @@ public:
         screenClip_.TopInset(clip.isValid() ? static_cast<float>(std::max(0.0, std::ceil(clip.top() * ratio))) : 0);
         screenClip_.RightInset(clip.isValid() ? static_cast<float>(std::max(0.0, width - std::floor(clip.right() * ratio))) : 0);
         screenClip_.BottomInset(clip.isValid() ? static_cast<float>(std::max(0.0, height - std::floor(clip.bottom() * ratio))) : 0);
+        syncRegion(origin);
         syncVisibility();
         return true;
     }
@@ -325,6 +326,33 @@ protected:
     }
 
 private:
+    // HTTRANSPARENT forwards clicks only to windows of this thread, so outside the card the
+    // full-frame surface would swallow clicks meant for other applications. It mirrors the
+    // overlay's hit region instead; the region already contains the whole rounded card.
+    void syncRegion(const POINT& clientOrigin) {
+        RECT frame{};
+        HRGN desired = CreateRectRgn(0, 0, 0, 0);
+        if (!desired || !GetWindowRect(foreground_, &frame)) {
+            if (desired) DeleteObject(desired);
+            return;
+        }
+        if (GetWindowRgn(foreground_, desired) == ERROR) {
+            DeleteObject(desired);
+            desired = nullptr;
+        } else {
+            OffsetRgn(desired, frame.left - clientOrigin.x, frame.top - clientOrigin.y);
+        }
+        HRGN current = CreateRectRgn(0, 0, 0, 0);
+        const bool hasCurrent = current && GetWindowRgn(window_, current) != ERROR;
+        const bool same = desired ? hasCurrent && EqualRgn(current, desired) : !hasCurrent;
+        if (current) DeleteObject(current);
+        if (same) {
+            if (desired) DeleteObject(desired);
+            return;
+        }
+        if (!SetWindowRgn(window_, desired, TRUE) && desired) DeleteObject(desired);
+    }
+
     void syncVisibility() {
         const bool shown = enabled_ && !clippedOut_ && IsWindowVisible(foreground_) && !IsIconic(foreground_);
         if (shown == static_cast<bool>(IsWindowVisible(window_))) return;
