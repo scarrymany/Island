@@ -49,6 +49,7 @@ private:
     [[nodiscard]] QJsonObject document() const;
     bool commit(QJsonObject document, QString* error);
     void accept(const QJsonObject& document);
+    void migrateSettingsFont();
     static bool validateDocument(QJsonObject& document, QString* error);
 
     QString path_;

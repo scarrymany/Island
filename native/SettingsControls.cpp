@@ -39,6 +39,9 @@ constexpr int PopupGap = 6;
 constexpr int PopupScreenMargin = 8;
 constexpr int PopupMaximumRows = 10;
 constexpr int PopupTravel = 6;
+// The pill spring's period is this multiple of the configured duration; light damping lets it settle without bounce.
+constexpr double PillResponseFactor = 1.4;
+constexpr double PillDamping = 0.9;
 const QString ThumbTrack = QStringLiteral("thumb");
 const QString NavigationTrack = QStringLiteral("navigation");
 const QString PopupTrack = QStringLiteral("popup");
@@ -831,6 +834,7 @@ void SettingsNavigation::movePill(bool animate)
 {
     const QRectF destination = currentItem() ? visualItemRect(currentItem()) : QRect{};
     if (target_ == destination && pill_.isValid()) return;
+    const double velocity = animation_.velocity(NavigationTrack);
     animation_.stopAll();
     target_ = destination;
     if (!animate || !motionEnabled_ || durationMs_ == 0 || !isVisible() || !pill_.isValid() || !target_.isValid()) {
@@ -838,12 +842,14 @@ void SettingsNavigation::movePill(bool animate)
         viewport()->update();
         return;
     }
-    const QRectF origin = pill_;
-    animation_.start(NavigationTrack, 0, 1, std::chrono::milliseconds(durationMs_), [this, origin, destination](double value) {
-        pill_ = QRectF(origin.topLeft() + (destination.topLeft() - origin.topLeft()) * value,
-            origin.size() + (destination.size() - origin.size()) * value);
+    // Rows share one size, so only the top travels. A spring keeps the pill's speed when
+    // the selection changes again mid-flight instead of restarting from rest.
+    pill_ = QRectF(destination.left(), pill_.top(), destination.width(), destination.height());
+    const AnimationClock::Spring spring{durationMs_ / 1000.0 * PillResponseFactor, PillDamping};
+    animation_.spring(NavigationTrack, pill_.top(), destination.top(), spring, [this](double top) {
+        pill_.moveTop(top);
         viewport()->update();
-    });
+    }, {}, velocity);
 }
 
 void SettingsNavigation::currentChanged(const QModelIndex& current, const QModelIndex& previous)

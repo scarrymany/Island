@@ -1,4 +1,6 @@
 #include "AppAssets.h"
+#include "ConfigStore.h"
+#include <QFontInfo>
 
 #include <QFile>
 #include <QFontDatabase>
@@ -30,7 +32,7 @@ private slots:
 
     void embeddedFontLoadsWithCyrillic() {
         const auto family = AppAssets::settingsFontFamily();
-        QCOMPARE(family, QStringLiteral("Inter"));
+        QVERIFY(QFontDatabase::hasFamily(family));
         QCOMPARE(AppAssets::settingsFontFamily(), family);
         const QString letters = QStringLiteral("АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
                                                 "абвгдеёжзийклмнопрстуфхцчшщъыьэюяІіЇїЄєҐґ");
@@ -68,14 +70,15 @@ private slots:
         QCOMPARE(AppAssets::bundledFontFamilies(), AppAssets::bundledFontFamilies());
     }
 
-    void semiboldFontUsesInter() {
-        QFont font(AppAssets::settingsFontFamily());
+    void settingsFontResolvesWithCyrillic() {
+        // The saved default names Windows 11's face; elsewhere it must still resolve to a real font.
+        QFont font(ConfigStore::defaults()["settings_font_family"].toString());
         font.setPixelSize(16);
         font.setWeight(QFont::DemiBold);
         const auto raw = QRawFont::fromFont(font);
         QVERIFY(raw.isValid());
-        QCOMPARE(raw.familyName(), QStringLiteral("Inter"));
         QVERIFY(raw.supportsCharacter(QChar(u'Я')));
+        QCOMPARE(QFontInfo(font).family(), AppAssets::settingsFontFamily());
     }
 
     void applicationIconRendersFromResource() {

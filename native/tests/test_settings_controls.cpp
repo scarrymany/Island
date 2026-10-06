@@ -95,8 +95,8 @@ private slots:
         QVERIFY(middle < navigation.visualItemRect(navigation.currentItem()).center().y());
         navigation.setCurrentRow(0);
         QCOMPARE(navigationPillCenter(navigation), middle);
-        QTest::qWait(260);
-        QCOMPARE(navigationPillCenter(navigation), initial);
+        // The spring carries its speed into the reversal, so it settles a little later.
+        QTRY_COMPARE_WITH_TIMEOUT(navigationPillCenter(navigation), initial, 1000);
         QCOMPARE(changed.size(), 2);
         QCOMPARE(navigation.currentRow(), 0);
     }

@@ -1,5 +1,6 @@
 #include "AppAssets.h"
 
+#include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QResource>
@@ -18,6 +19,8 @@ QStringList AppAssets::bundledFontFamilies() {
     if (!qobject_cast<QGuiApplication*>(QCoreApplication::instance())) return {};
     static const QStringList loaded = [] {
         initializeResources();
+        // Windows 10 has no Segoe UI Variable; keep its saved default readable there.
+        QFont::insertSubstitutions(QStringLiteral("Segoe UI Variable"), {QStringLiteral("Segoe UI"), QStringLiteral("Inter")});
         QStringList families;
         for (const auto* file : {"Inter", "Manrope", "GolosText", "Rubik", "IBMPlexSans", "JetBrainsMono"}) {
             const int id = QFontDatabase::addApplicationFont(QStringLiteral(":/island/fonts/%1.ttf").arg(QString::fromLatin1(file)));
@@ -34,8 +37,12 @@ QStringList AppAssets::bundledFontFamilies() {
 }
 
 QString AppAssets::settingsFontFamily() {
-    const auto families = bundledFontFamilies();
-    return families.contains(QStringLiteral("Inter")) ? QStringLiteral("Inter") : QStringLiteral("Segoe UI");
+    bundledFontFamilies();
+    // The hinted system face stays crisp at 100% scaling where an unhinted bundled face blurs.
+    for (const auto& family : {QStringLiteral("Segoe UI Variable"), QStringLiteral("Segoe UI")}) {
+        if (QFontDatabase::hasFamily(family)) return family;
+    }
+    return QStringLiteral("Inter");
 }
 
 QIcon AppAssets::icon() {

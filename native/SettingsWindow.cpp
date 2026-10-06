@@ -217,8 +217,10 @@ private:
 
 }
 
-// Cross-fades two snapshots of the content column. Painting pixmaps keeps the
+// Hands over between two snapshots of the content column. Painting pixmaps keeps the
 // transition at display rate, unlike an opacity effect re-rendering every widget.
+// The old page only fades out briefly while the new one rises into place, so the two
+// never ghost through each other; offsets stay on whole pixels to keep text crisp.
 class PageTransition final : public QWidget {
 public:
     explicit PageTransition(QWidget* parent) : QWidget(parent) {
@@ -231,16 +233,23 @@ public:
     QPixmap incoming;
     double progress = 1;
 
+private:
+    static constexpr double OutgoingShare = 0.3;
+    static constexpr double IncomingDelay = 0.1;
+    static constexpr double IncomingRise = 22;
+
 protected:
     void paintEvent(QPaintEvent*) override {
         QPainter painter(this);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform);
-        const double out = std::clamp(progress / 0.55, 0.0, 1.0);
-        painter.setOpacity(1 - out);
-        painter.drawPixmap(QPointF(0, -8 * out), outgoing);
-        const double in = std::clamp((progress - 0.12) / 0.88, 0.0, 1.0);
-        painter.setOpacity(in);
-        painter.drawPixmap(QPointF(0, 14 * (1 - in)), incoming);
+        const double out = std::clamp(progress / OutgoingShare, 0.0, 1.0);
+        if (out < 1) {
+            painter.setOpacity(1 - out);
+            painter.drawPixmap(0, 0, outgoing);
+        }
+        const double in = std::clamp((progress - IncomingDelay) / (1 - IncomingDelay), 0.0, 1.0);
+        const double rest = 1 - in;
+        painter.setOpacity(1 - rest * rest * rest);
+        painter.drawPixmap(0, qRound(IncomingRise * rest * rest * rest * rest), incoming);
     }
 };
 
@@ -1454,7 +1463,7 @@ void SettingsWindow::updateStyle()
     AppAssets::settingsFontFamily();
     QFont panelFont(config.value("settings_font_family").toString());
     panelFont.setPointSize(fontSize);
-    panelFont.setWeight(QFont::DemiBold);
+    panelFont.setWeight(QFont::Normal);
     QString family = panelFont.family();
     family.replace('\\', QStringLiteral("\\\\")).replace('"', QStringLiteral("\\\""));
     family.replace('\n', ' ').replace('\r', ' ');
@@ -1474,7 +1483,7 @@ void SettingsWindow::updateStyle()
     for (auto* area : findChildren<QAbstractScrollArea*>())
         SmoothScroll::setColor(area, foreground);
     const QString sheet = QStringLiteral(R"(
-        QWidget { color: %1; font-size: %2pt; font-weight: 600; font-family: "%13"; }
+        QWidget { color: %1; font-size: %2pt; font-weight: 400; font-family: "%13"; }
         QWidget#SettingsWindow { background: transparent; }
         QFrame#windowFrame { background: %3; border: 1px solid %4; border-radius: 14px; }
         QWidget#titleBar { background: transparent; border-bottom: 1px solid %4; }
@@ -1486,13 +1495,13 @@ void SettingsWindow::updateStyle()
         QFrame#footer { background: transparent; border-top: 1px solid %4; }
         QFrame#settingsGroup { background: %5; border: 1px solid %4; border-radius: 10px; }
         QLabel { background: transparent; }
-        QLabel#brand { font-size: 14pt; font-weight: 750; }
-        QLabel#heading { font-size: 23pt; font-weight: 700; }
+        QLabel#brand { font-size: 14pt; font-weight: 700; }
+        QLabel#heading { font-size: 21pt; font-weight: 600; }
         QLabel#groupHeading { font-size: %6pt; font-weight: 600; }
         QLabel#description { color: %7; font-weight: 400; }
         QLabel#liveLabel { color: %8; font-size: 9pt; }
-        QListWidget#navigation { background: transparent; border: none; outline: none; font-size: 10pt; font-weight: 500; }
-        QPushButton { background: %9; border: 1px solid %4; border-radius: 8px; padding: 9px 14px; outline: none; }
+        QListWidget#navigation { background: transparent; border: none; outline: none; font-size: 10pt; font-weight: 400; }
+        QPushButton { background: %9; border: 1px solid %4; border-radius: 8px; padding: 9px 14px; outline: none; font-weight: 500; }
         QPushButton:focus { border-color: %7; }
         QPushButton[mouseFocus="true"]:focus:!hover:!pressed:!checked { border-color: %4; }
         QPushButton:hover { background: %10; border-color: %8; }
@@ -1588,10 +1597,9 @@ void SettingsWindow::animatePage()
     transition_->show();
     transition_->raise();
     content_->setUpdatesEnabled(false);
-    const auto duration = std::chrono::milliseconds(qRound(store_->config().value("settings_animation_duration").toInt() * 1.4));
-    QEasingCurve easing(QEasingCurve::BezierSpline);
-    easing.addCubicBezierSegment(QPointF(0.05, 0.7), QPointF(0.1, 1.0), QPointF(1, 1));
-    motion_.start("page", 0, 1, duration, easing, [this](double progress) {
+    // Progress runs linearly; PageTransition shapes the fade-out and the rise separately.
+    const auto duration = std::chrono::milliseconds(qRound(store_->config().value("settings_animation_duration").toInt() * 1.6));
+    motion_.start("page", 0, 1, duration, QEasingCurve::Linear, [this](double progress) {
         transition_->progress = progress;
         transition_->update();
     }, [this] { finishPageAnimation(); });

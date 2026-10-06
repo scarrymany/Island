@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 
 namespace {
 constexpr int BarWidth = 12;
@@ -22,7 +23,8 @@ constexpr double HoverThickness = 8;
 constexpr double MinimumThumb = 34;
 constexpr int IdleDelayMs = 900;
 constexpr double WheelStep = 104;
-constexpr int GlideMs = 210;
+// Time constant of the wheel glide is GlideResponse / 2pi (about 53 ms): a notch settles in ~0.28 s.
+constexpr double GlideResponse = 0.33;
 
 class OverlayScrollBar final : public QWidget {
 public:
@@ -179,14 +181,17 @@ private:
         auto* bar = area_->verticalScrollBar();
         target_ = std::clamp(value, static_cast<double>(bar->minimum()), static_cast<double>(bar->maximum()));
         if (!motionEnabled_ || !isVisible()) { bar->setValue(qRound(target_)); return; }
-        // Ease out from the current position: the page moves on the very next frame and
-        // decelerates, so a wheel notch feels immediate (a spring from rest would lag).
+        // A critically damped spring launched at omega * distance decays exponentially: the
+        // page moves on the very next frame and slows down smoothly. Every further notch
+        // re-aims the same motion from the current position, so rapid wheeling never
+        // restarts an easing curve with a visible jolt.
+        const double from = gliding_ && position_ >= 0 ? position_ : bar->value();
+        const double omega = 2 * std::numbers::pi / GlideResponse;
         gliding_ = true;
-        motion_.start(QStringLiteral("glide"), position_ >= 0 ? position_ : bar->value(), target_, std::chrono::milliseconds(GlideMs),
-                      QEasingCurve::OutCubic, [this](double position) {
+        motion_.spring(QStringLiteral("glide"), from, target_, {GlideResponse, 1.0}, [this](double position) {
             position_ = position;
             area_->verticalScrollBar()->setValue(qRound(position));
-        }, [this] { gliding_ = false; position_ = -1; });
+        }, [this] { gliding_ = false; position_ = -1; }, omega * (target_ - from));
     }
 
     bool wheel(QWheelEvent* event) {

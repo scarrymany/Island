@@ -22,6 +22,10 @@ constexpr qint64 MaxFileBytes = 1024 * 1024;
 constexpr int MaxSavedItems = 64;
 constexpr int SchemaVersion = 1;
 constexpr double MaxCoordinate = 32768.0;
+constexpr auto SettingsFont = "Segoe UI Variable";
+constexpr auto LegacySettingsFont = "Inter";
+constexpr auto MigrationsFile = "migrations.json";
+constexpr auto SettingsFontMigration = "settings_font";
 
 const QStringList Elements = {
     "cover", "title", "artist", "album", "source", "progress", "time", "previous", "play", "next", "volume"
@@ -163,8 +167,10 @@ ConfigStore::ConfigStore(QString path, QObject* parent)
             base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
         path_ = QDir(base).filePath("Island/config.json");
     }
-    if (!QFileInfo::exists(path_))
+    if (!QFileInfo::exists(path_)) {
+        migrateSettingsFont();
         return;
+    }
     QJsonObject loaded;
     QFile readable(path_);
     if (!readable.open(QIODevice::ReadOnly)) {
@@ -174,6 +180,7 @@ ConfigStore::ConfigStore(QString path, QObject* parent)
     readable.close();
     if (readDocument(path_, loaded, &loadError_) && validateDocument(loaded, &loadError_)) {
         accept(loaded);
+        migrateSettingsFont();
         return;
     }
     const QFileInfo info(path_);
@@ -183,6 +190,37 @@ ConfigStore::ConfigStore(QString path, QObject* parent)
         loadError_ += QStringLiteral(". Исходный файл сохранён: %1").arg(backup);
     else
         loadError_ += QStringLiteral(". Не удалось создать резервную копию");
+}
+
+// 1.2.4 moved the settings panel from Inter to the system UI font. Configs that still carry
+// the old default move once; the marker keeps a later, deliberate choice of Inter intact.
+void ConfigStore::migrateSettingsFont()
+{
+    const QString marker = QFileInfo(path_).dir().filePath(MigrationsFile);
+    QJsonObject done;
+    if (QFileInfo::exists(marker) && (!readDocument(marker, done, nullptr) || done.contains(SettingsFontMigration)))
+        return;
+    bool changed = false;
+    const auto migrate = [&changed](QJsonObject& config) {
+        if (config.value("settings_font_family").toString() != LegacySettingsFont)
+            return;
+        config.insert("settings_font_family", SettingsFont);
+        changed = true;
+    };
+    migrate(config_);
+    for (auto* collection : {&profiles_, &themes_}) {
+        for (auto it = collection->begin(); it != collection->end(); ++it) {
+            auto entry = it.value().toObject();
+            migrate(entry);
+            it.value() = entry;
+        }
+    }
+    if (changed && !writeDocument(path_, document(), nullptr)) {
+        loadError_ = QStringLiteral("Не удалось обновить шрифт настроек в файле");
+        return;
+    }
+    done.insert(SettingsFontMigration, true);
+    writeDocument(marker, done, nullptr);
 }
 
 QJsonObject ConfigStore::defaults()
@@ -212,7 +250,7 @@ QJsonObject ConfigStore::defaults()
         {"border_width", 0.0}, {"border_opacity", 0.22}, {"border_color", "#9B8CFF"},
         {"source_id", ""}, {"settings_background", "#0A0A0A"}, {"settings_accent", "#FFFFFF"},
         {"settings_text", "#D4D4D4"}, {"settings_font_size", 10}, {"settings_opacity", 0.94},
-        {"settings_animations", true}, {"settings_animation_duration", 200}, {"settings_font_family", "Inter"},
+        {"settings_animations", true}, {"settings_animation_duration", 200}, {"settings_font_family", SettingsFont},
         {"settings_blur", true}, {"update_repository", QString::fromLatin1(AppInfo::Repository)}, {"check_updates", true}
     };
 }

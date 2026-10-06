@@ -1,6 +1,8 @@
 #include "AnimationClock.h"
 
 #include <QEventLoop>
+#include <QScreen>
+#include <QWidget>
 #include <QTimer>
 #include <QtTest>
 #include <cmath>
@@ -28,6 +30,20 @@ private slots:
         clock.setRefreshRate(59.94);
         QVERIFY(std::abs(clock.frameInterval().count() - 16'683'350) <= 1);
         QVERIFY(!clock.isActive());
+    }
+
+    void unconfiguredClockFollowsItsWidgetScreen() {
+        QWidget widget;
+        AnimationClock clock(&widget);
+        QVERIFY(widget.screen());
+        const double rate = widget.screen()->refreshRate();
+        clock.start("fade", 0, 1, 50ms, [](double) {});
+        QVERIFY(std::abs(clock.frameInterval().count() - std::llround(1e9 / rate)) <= 1);
+        clock.setRefreshRate(rate == 144 ? 240 : 144);
+        const auto configured = clock.frameInterval();
+        clock.start("fade", 0, 1, 50ms, [](double) {});
+        QCOMPARE(clock.frameInterval(), configured);
+        clock.stopAll();
     }
 
     void invalidRatesUseSafeCadence() {
@@ -177,5 +193,5 @@ private slots:
     }
 };
 
-QTEST_GUILESS_MAIN(AnimationTest)
+QTEST_MAIN(AnimationTest)
 #include "test_animation.moc"

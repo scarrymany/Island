@@ -236,15 +236,17 @@ private slots:
         settings.show();
         auto* heading = settings.findChild<QLabel*>("heading");
         QVERIFY(heading);
-        QCOMPARE(QFontInfo(heading->font()).family(), QString("Inter"));
+        const QString family = AppAssets::settingsFontFamily();
+        const QString saved = store.config()["settings_font_family"].toString();
+        QCOMPARE(QFontInfo(heading->font()).family(), family);
         for (int size : {18, 10}) {
             auto config = store.config();
             config["settings_font_size"] = size;
             QVERIFY(store.update(config));
-            QCOMPARE(QFontInfo(heading->font()).family(), QString("Inter"));
-            QCOMPARE(store.config()["settings_font_family"].toString(), QString("Inter"));
+            QCOMPARE(QFontInfo(heading->font()).family(), family);
+            QCOMPARE(store.config()["settings_font_family"].toString(), saved);
             for (auto* label : settings.findChildren<QLabel*>())
-                QCOMPARE(QFontInfo(label->font()).family(), QString("Inter"));
+                QCOMPARE(QFontInfo(label->font()).family(), family);
         }
     }
     void restoresAccidentallyClearedShortcut() {

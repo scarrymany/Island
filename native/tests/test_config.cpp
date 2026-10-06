@@ -353,7 +353,7 @@ void artworkConfiguration(const QString& directory)
 void settingsAppearanceConfiguration(const QString& directory)
 {
     const QJsonObject expected{{"settings_animations", true}, {"settings_animation_duration", 200},
-        {"settings_font_family", "Inter"}};
+        {"settings_font_family", "Segoe UI Variable"}};
     const auto defaults = ConfigStore::defaults();
     for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
         check(defaults.value(field.key()) == field.value(), qPrintable("settings appearance default: " + field.key()));
@@ -428,6 +428,42 @@ void settingsAppearanceConfiguration(const QString& directory)
     check(reloaded.applyTheme("Lunar"), "Lunar theme restores settings appearance defaults");
     for (auto field = expected.constBegin(); field != expected.constEnd(); ++field)
         check(reloaded.config().value(field.key()) == field.value(), qPrintable("Lunar restores settings appearance: " + field.key()));
+}
+
+void settingsFontMigration(const QString& directory)
+{
+    const QDir folder(QDir(directory).filePath("font-migration"));
+    check(QDir().mkpath(folder.path()), "font migration folder created");
+    const QString path = folder.filePath("config.json");
+    const QJsonObject legacy{{"settings_font_family", "Inter"}, {"width", 640}};
+    writeJson(path, {{"schema", 1}, {"config", legacy},
+        {"profiles", QJsonObject{{"Old", legacy}, {"Mono", QJsonObject{{"settings_font_family", "Consolas"}}}}},
+        {"themes", QJsonObject{{"Mine", QJsonObject{{"settings_font_family", "Inter"}}}}}});
+    ConfigStore store(path);
+    const QString system = ConfigStore::defaults().value("settings_font_family").toString();
+    check(store.loadError().isEmpty(), "font migration loads cleanly");
+    check(store.config().value("settings_font_family").toString() == system, "old default settings font moves to the system font");
+    check(store.config().value("width").toInt() == 640, "font migration keeps other settings");
+    check(store.loadProfile("Old"), "migrated profile loads");
+    check(store.config().value("settings_font_family").toString() == system, "profile with the old default font migrates");
+    check(store.loadProfile("Mono"), "custom font profile loads");
+    check(store.config().value("settings_font_family").toString() == "Consolas", "a custom settings font is kept");
+    check(store.applyTheme("Mine"), "migrated theme applies");
+    check(store.config().value("settings_font_family").toString() == system, "theme with the old default font migrates");
+    check(ConfigStore(path).config() == store.config(), "font migration is persisted");
+
+    auto chosen = store.config();
+    chosen.insert("settings_font_family", "Inter");
+    check(store.update(chosen), "Inter chosen again after migration");
+    check(ConfigStore(path).config().value("settings_font_family").toString() == "Inter", "a deliberate Inter choice survives restarts");
+
+    const QDir fresh(QDir(directory).filePath("font-fresh"));
+    ConfigStore created(fresh.filePath("config.json"));
+    auto picked = created.config();
+    picked.insert("settings_font_family", "Inter");
+    check(created.update(picked), "fresh install saves Inter");
+    check(ConfigStore(fresh.filePath("config.json")).config().value("settings_font_family").toString() == "Inter",
+          "a fresh install never migrates a deliberate Inter choice");
 }
 }
 
@@ -536,6 +572,7 @@ int main(int argc, char** argv)
     compactConfiguration(temporary.path());
     artworkConfiguration(temporary.path());
     settingsAppearanceConfiguration(temporary.path());
+    settingsFontMigration(temporary.path());
     presetsAndPositionLock(temporary.path());
     qInfo() << "Configuration checks completed. Failures:" << failures;
     return failures == 0 ? 0 : 1;

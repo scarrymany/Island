@@ -22,6 +22,8 @@ public:
     };
 
     explicit AnimationClock(QObject* parent = nullptr);
+    // Until a rate is set explicitly, every new animation follows the refresh rate of the
+    // screen showing the parent widget, so 144-240 Hz displays are not driven at 60 Hz.
     void setRefreshRate(double refreshRate);
     std::chrono::nanoseconds frameInterval() const { return frameInterval_; }
     bool isActive() const { return timer_.isActive(); }
@@ -68,8 +70,11 @@ private:
 
     void tick();
     void schedule();
+    void applyRefreshRate(double refreshRate);
+    void followDisplay();
     static double springPrecision(const Track& track);
     qint64 alignToVBlank(qint64 deadline, qint64 now);
+    qint64 frameTime(qint64 now) const;
 
     QChronoTimer timer_;
     QElapsedTimer elapsed_;
@@ -82,4 +87,5 @@ private:
     qint64 vblankSampled_ = 0;
     quint64 nextId_ = 0;
     bool ticking_ = false;
+    bool explicitRate_ = false;
 };

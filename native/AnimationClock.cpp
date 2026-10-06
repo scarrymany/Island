@@ -5,6 +5,10 @@
 #include <dwmapi.h>
 #endif
 
+#include <QGuiApplication>
+#include <QScreen>
+#include <QWidget>
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -27,10 +31,23 @@ AnimationClock::AnimationClock(QObject* parent) : QObject(parent) {
     timer_.setSingleShot(true);
     timer_.setTimerType(Qt::PreciseTimer);
     connect(&timer_, &QChronoTimer::timeout, this, &AnimationClock::tick);
-    setRefreshRate(DefaultRefreshRate);
+    applyRefreshRate(DefaultRefreshRate);
 }
 
 void AnimationClock::setRefreshRate(double refreshRate) {
+    explicitRate_ = true;
+    applyRefreshRate(refreshRate);
+}
+
+void AnimationClock::followDisplay() {
+    if (explicitRate_ || !tracks_.isEmpty()) return;
+    const auto* widget = qobject_cast<const QWidget*>(parent());
+    const QScreen* display = widget ? widget->screen() : nullptr;
+    if (!display && qobject_cast<QGuiApplication*>(QCoreApplication::instance())) display = QGuiApplication::primaryScreen();
+    if (display) applyRefreshRate(display->refreshRate());
+}
+
+void AnimationClock::applyRefreshRate(double refreshRate) {
     if (!std::isfinite(refreshRate) || refreshRate <= 0) refreshRate = DefaultRefreshRate;
     refreshRate = std::clamp(refreshRate, 1.0, MaximumRefreshRate);
     const auto interval = std::chrono::nanoseconds(std::llround(NanosecondsPerSecond / refreshRate));
@@ -49,6 +66,7 @@ void AnimationClock::start(const QString& name, double from, double to, std::chr
                            const QEasingCurve& easing, ValueCallback callback, CompletionCallback finished) {
     stop(name);
     if (!callback) return;
+    followDisplay();
     if (duration <= std::chrono::milliseconds::zero() || from == to) {
         callback(to);
         if (finished) finished();
@@ -65,6 +83,7 @@ void AnimationClock::spring(const QString& name, double from, double to, Spring 
                             CompletionCallback finished, double velocity) {
     stop(name);
     if (!callback) return;
+    followDisplay();
     if (!std::isfinite(velocity)) velocity = 0;
     const bool instant = !std::isfinite(parameters.response) || parameters.response <= 0
         || !std::isfinite(parameters.damping) || parameters.damping <= 0;
@@ -118,6 +137,7 @@ void AnimationClock::requestFrame(const QString& name, CompletionCallback callba
         return;
     }
     stop(name);
+    followDisplay();
     tracks_.insert(name, Track{++nextId_, Kind::Frame, elapsed_.nsecsElapsed(), 0, 0, 0, 0, 0, {}, {}, {},
         std::move(callback), 0, 0});
     if (!timer_.isActive()) schedule();
@@ -179,6 +199,9 @@ void AnimationClock::tick() {
         schedule();
         return;
     }
+    // Sample motion on the compositor's grid, not at the timer's wake-up: Windows timers
+    // fire up to a millisecond late, which would turn even motion into uneven steps.
+    const qint64 sampled = frameTime(now);
     ticking_ = true;
     const auto names = tracks_.keys();
     for (const auto& name : names) {
@@ -193,12 +216,12 @@ void AnimationClock::tick() {
         bool done = false;
         double value = track.to;
         if (track.kind == Kind::Eased) {
-            const double progress = std::clamp(static_cast<double>(now - track.started) / track.duration, 0.0, 1.0);
+            const double progress = std::clamp(static_cast<double>(sampled - track.started) / track.duration, 0.0, 1.0);
             done = progress == 1;
             if (!done) value = track.from + (track.to - track.from) * track.easing.valueForProgress(progress);
             current->current = value;
         } else {
-            const double seconds = static_cast<double>(now - track.started) / NanosecondsPerSecond;
+            const double seconds = static_cast<double>(sampled - track.started) / NanosecondsPerSecond;
             double speed = 0;
             evaluateSpring(track.from, track.velocity, track.to, track.spring, seconds, value, speed);
             const double precision = springPrecision(track);
@@ -235,6 +258,17 @@ void AnimationClock::schedule() {
     // Absolute deadlines compensate for Windows timer rounding; late frames are skipped.
     timer_.setInterval(std::chrono::nanoseconds(nextFrame_ - now));
     timer_.start();
+}
+
+qint64 AnimationClock::frameTime(qint64 now) const {
+#ifdef Q_OS_WIN
+    const qint64 period = frameInterval_.count();
+    if (vblankPeriod_ <= 0 || std::abs(vblankPeriod_ - period) > period / 8) return now;
+    const qint64 offset = (now - vblank_ - VBlankOffset) % vblankPeriod_;
+    return now - (offset < 0 ? offset + vblankPeriod_ : offset);
+#else
+    return now;
+#endif
 }
 
 qint64 AnimationClock::alignToVBlank(qint64 deadline, qint64 now) {
