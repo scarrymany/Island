@@ -67,6 +67,7 @@ private:
 
     void applyNative();
     void updateNativeRegion();
+    QRectF transitionHitBounds() const;
     void applyHitTesting();
     void setHudOpacity(double opacity);
     void applyDockGeometry(double progress);

@@ -630,9 +630,23 @@ void HudWindow::setPeek(bool engaged) {
         return;
     }
     if (animations_.retarget("peek", target)) return;
+    // The last value callback still runs while the track is alive, so the settled
+    // region must be applied once the spring is gone or the frame stays hittable.
     animations_.spring("peek", peek_, target, {0.26, 0.72}, [this](double value) {
         peek_ = value; updateCard(); updateNativeRegion(); update();
-    });
+    }, [this] { updateNativeRegion(); });
+}
+
+QRectF HudWindow::transitionHitBounds() const {
+    // The dock morph sweeps the whole frame. A peek only breathes around the strip, so
+    // the empty frame below it must keep passing clicks to the windows underneath.
+    if (animations_.isRunning("dock")) return QRectF(rect());
+    if (!animations_.isRunning("peek")) return {};
+    const double scale = config_["scale"].toDouble(1);
+    const double inset = qCeil(SurfaceInset * scale);
+    const double width = PeekWidth * scale + inset;
+    return card_.translated(-QPointF(pos())).adjusted(-width, -inset, width, PeekHeight * scale + inset)
+        .intersected(QRectF(rect()));
 }
 
 void HudWindow::applyNative() {
@@ -640,10 +654,9 @@ void HudWindow::applyNative() {
     const QRectF card = card_.translated(-QPointF(pos()));
     const auto* target = targetScreen();
     const QRectF bounds = target && dockProgress_ > 0 ? QRectF(target->geometry()).translated(-QPointF(pos())) : QRectF{};
-    const bool moving = animations_.isRunning("dock") || animations_.isRunning("peek");
     WindowsIntegration::applyOverlayBackdrop(winId(), config_["blur"].toBool(true), card, cardRadius(), devicePixelRatioF(),
         config_[collapsed_ ? "compact_background" : "background"].toString("#10121B"),
-        config_[collapsed_ ? "compact_opacity" : "opacity"].toDouble(.94), bounds, moving ? QRectF(rect()) : QRectF{});
+        config_[collapsed_ ? "compact_opacity" : "opacity"].toDouble(.94), bounds, transitionHitBounds());
     applyHitTesting();
     WindowsIntegration::ensureTopmost(winId());
     WindowsIntegration::setOverlayOpacity(winId(), windowOpacity());
@@ -671,11 +684,10 @@ void HudWindow::updateNativeRegion() {
     const QRectF card = card_.translated(-QPointF(pos()));
     const auto* target = targetScreen();
     const QRectF bounds = target && dockProgress_ > 0 ? QRectF(target->geometry()).translated(-QPointF(pos())) : QRectF{};
-    // While the card moves the whole frame stays hittable, so a shrinking card never
+    // While the card moves its path stays inside the region, so a shrinking card never
     // clips the previous frame's antialiased edge; at rest only the card is hit tested.
-    const bool moving = animations_.isRunning("dock") || animations_.isRunning("peek");
     WindowsIntegration::updateOverlayRegion(winId(), card, cardRadius(), devicePixelRatioF(), bounds,
-                                            moving ? QRectF(rect()) : QRectF{});
+                                            transitionHitBounds());
 }
 
 void HudWindow::showEvent(QShowEvent* e) {

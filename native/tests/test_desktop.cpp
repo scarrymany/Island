@@ -408,6 +408,46 @@ private slots:
         QTRY_COMPARE_WITH_TIMEOUT(cardWindow(hud, inset), expandedGeometry, 1500);
         QVERIFY2(GetForegroundWindow() == originalFocus, "Native hover expansion stole keyboard focus");
     }
+
+    void dockedStripPassesClicksAfterPeek() {
+        if (QGuiApplication::platformName() != QStringLiteral("windows"))
+            QSKIP("Requires an interactive Windows desktop and the windows QPA plugin");
+        QScreen* screen = QGuiApplication::primaryScreen();
+        QVERIFY(screen);
+        const QPoint originalCursor = QCursor::pos();
+        const auto restoreCursor = qScopeGuard([originalCursor] { QCursor::setPos(originalCursor); });
+        const QPoint away = screen->geometry().bottomRight() - QPoint(8, 8);
+        QCursor::setPos(away);
+        if (QCursor::pos() != away) QSKIP(qPrintable(cursorUnavailable(away)));
+
+        auto config = desktopConfiguration(screen);
+        config["dock_hover_delay"] = 60'000;
+        HudWindow hud(config);
+        hud.reveal(true);
+        const QPoint below = hud.cardGeometry().center().toPoint();
+        QTRY_VERIFY_WITH_TIMEOUT(docked(hud), 2500);
+        if (WindowsIntegration::foregroundIsFullscreen(hud.winId()))
+            QSKIP("A fullscreen application is in the foreground; the strip intentionally ignores hover there");
+        const QPoint strip(qRound(hud.cardGeometry().center().x()), screen->geometry().top() + VisibleHeight / 2);
+        const auto hittable = [&hud](const QPoint& global) {
+            HRGN region = CreateRectRgn(0, 0, 0, 0);
+            const auto release = qScopeGuard([region] { DeleteObject(region); });
+            const HWND hwnd = reinterpret_cast<HWND>(hud.winId());
+            if (GetWindowRgn(hwnd, region) == ERROR) return true;
+            const QPointF local = QPointF(global - hud.pos()) * hud.devicePixelRatioF();
+            return PtInRegion(region, qFloor(local.x()), qFloor(local.y())) != FALSE;
+        };
+
+        // Touching the strip only peeks; leaving it must not leave the empty frame below
+        // swallowing clicks meant for the windows underneath.
+        QCursor::setPos(strip);
+        if (QCursor::pos() != strip) QSKIP(qPrintable(cursorUnavailable(strip)));
+        QTest::qWait(120);
+        QCursor::setPos(away);
+        QTRY_VERIFY_WITH_TIMEOUT(!hittable(below), 3000);
+        QVERIFY(docked(hud));
+        QVERIFY(hittable(strip));
+    }
 };
 
 QTEST_MAIN(TestDesktop)
