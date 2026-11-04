@@ -55,6 +55,7 @@ QString text(const winrt::hstring& value) {
 
 QString sourceName(const QString& sourceId) {
     static const QList<QPair<QString, QString>> names{
+        {QStringLiteral("scarpify"), QStringLiteral("SCARPIFY")},
         {QStringLiteral("spotify"), QStringLiteral("Spotify")},
         {QStringLiteral("soundcloud"), QStringLiteral("SoundCloud")},
         {QStringLiteral("chrome"), QStringLiteral("Chrome")},

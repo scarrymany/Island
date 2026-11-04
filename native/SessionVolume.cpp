@@ -279,6 +279,8 @@ bool SessionVolumeMatching::matches(const QString& sourceId, const ProcessIdenti
     if (executableId.match(sourceId).hasMatch()) return sourceId.compare(executable, Qt::CaseInsensitive) == 0;
     const QString source = sourceId.toCaseFolded();
     if (source == "spotify") return executable == "spotify.exe";
+    // SCARPIFY's shortcuts carry its bundle id, so sessions started from them report it instead of the executable.
+    if (source == "com.scarpify.app") return executable == "scarpify.exe";
     // Chromium's desktop AUMIDs retain the product prefix for browser profiles and installed web apps.
     static const QRegularExpression browserId(QStringLiteral("^(chrome|msedge)(?:\\.[A-Za-z0-9_-]+)*$"));
     const auto browser = browserId.match(source);

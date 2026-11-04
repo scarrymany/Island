@@ -38,6 +38,11 @@ private slots:
         QVERIFY(!SessionVolumeMatching::matches({}, spotify));
         QVERIFY(!SessionVolumeMatching::matches("Spotify.exe", {}));
         QVERIFY(!SessionVolumeMatching::matches("chrome.exe", {R"(C:\Apps\chrome_helper.exe)", {}, {}}));
+        const ProcessIdentity scarpify{R"(C:\Users\Music\AppData\Local\SCARPIFY\scarpify.exe)", {}, {}};
+        QVERIFY(SessionVolumeMatching::matches("com.scarpify.app", scarpify));
+        QVERIFY(SessionVolumeMatching::matches("scarpify.exe", scarpify));
+        QVERIFY(!SessionVolumeMatching::matches("com.scarpify.app", spotify));
+        QVERIFY(!SessionVolumeMatching::matches("Spotify.exe", scarpify));
     }
 
     void fullPathsDoNotFallBackToBasename() {

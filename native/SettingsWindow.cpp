@@ -948,7 +948,7 @@ void SettingsWindow::buildAnimations()
 
 void SettingsWindow::buildSources()
 {
-    auto* page = addPage(QStringLiteral("Источники"), QStringLiteral("SCARP ISLAND получает музыку из системных медиасессий Windows. Поддерживаются Spotify, браузеры с SoundCloud и другие совместимые приложения."));
+    auto* page = addPage(QStringLiteral("Источники"), QStringLiteral("SCARP ISLAND получает музыку из системных медиасессий Windows. Поддерживаются Spotify, SCARPIFY, браузеры с SoundCloud и другие совместимые приложения."));
     auto* source = addGroup(page, QStringLiteral("Воспроизведение"));
     sourceChoice_ = addChoice(source, QStringLiteral("Источник музыки"), "source_id", {{"", QStringLiteral("Автоматически")}});
     source->addRow(description(QStringLiteral("В автоматическом режиме выбирается активное музыкальное приложение. Чтобы закрепить конкретный проигрыватель, выберите его в списке.")));
